@@ -2,7 +2,8 @@ import { useMemo, useState } from 'react'
 import type { CompProfile } from '../engine/tax'
 import { computePaycheck, socialSecurityCutoff, matchForfeitureRisk } from '../engine/tax'
 import { getTaxYear } from '../engine/taxData'
-import { AllocationBar, type Segment } from '../charts'
+import { payTimeline, summariseTimeline } from '../engine/timeline'
+import { AllocationBar, PaycheckTimeline, type Segment } from '../charts'
 import { money, percent, prettyDate } from '../format'
 
 type Lens = 'period' | 'monthly' | 'annual'
@@ -19,6 +20,7 @@ export function Paycheck({ profile }: { profile: CompProfile }) {
   const taxYear = getTaxYear(profile.year)
   const ssCutoff = useMemo(() => socialSecurityCutoff(profile), [profile])
   const match = useMemo(() => matchForfeitureRisk(profile), [profile])
+  const timeline = useMemo(() => summariseTimeline(payTimeline(profile)), [profile])
 
   // Same annual figures, three lenses — never recomputed, just divided.
   const scale = lens === 'annual' ? 1 : lens === 'monthly' ? 12 : r.periodsPerYear
@@ -57,6 +59,28 @@ export function Paycheck({ profile }: { profile: CompProfile }) {
           <div className="note">free money on top of gross</div>
         </div>
       </div>
+
+      {timeline.periods.length > 0 && (
+        <div className="card">
+          <h2>Every paycheck this year</h2>
+          <p className="caption">
+            {timeline.spread > 1 ? (
+              <>
+                Your checks are not all the same. The smallest is{' '}
+                {money(timeline.smallest!.net, true)} and the largest{' '}
+                {money(timeline.largest!.net, true)} — a {money(timeline.spread, true)} swing, driven
+                by the wage-base and contribution limits below.
+              </>
+            ) : (
+              <>
+                Every check this year lands at {money(timeline.largest!.net, true)}. Nothing crosses
+                a wage base or a contribution limit, so nothing steps.
+              </>
+            )}
+          </p>
+          <PaycheckTimeline points={timeline.periods} />
+        </div>
+      )}
 
       <div className="card">
         <h2>Where your gross pay goes</h2>

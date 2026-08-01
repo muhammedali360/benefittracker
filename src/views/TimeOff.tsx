@@ -5,12 +5,15 @@ import {
   balanceAsOf,
   projectBalance,
   forecastYearEnd,
-  businessDayCount,
+  chargeableDays,
+  earliestAffordable,
   hourlyRate,
   type PtoEventType,
 } from '../engine/pto'
+import { holidaySet } from '../engine/holidays'
+import { bestBridgePerHoliday, type BridgePlan } from '../engine/bridge'
 import { money, hoursLabel, prettyDate, todayISO } from '../format'
-import { BalanceLines, type BalanceSeries } from '../charts'
+import { BalanceLines, YearCalendar, type BalanceSeries, type CalendarMark } from '../charts'
 
 type Store = ReturnType<typeof useStore>
 
@@ -102,10 +105,15 @@ export function TimeOff({ store }: { store: Store }) {
     cap: d.bucket.carryoverCapHours,
   }))
 
-  const derivedHours =
+  // Federal holidays for this year and its neighbours, so a span crossing New
+  // Year is still costed correctly.
+  const holidays = useMemo(() => holidaySet([year - 1, year, year + 1]), [year])
+
+  const span =
     form.type === 'usage' && form.start && form.end && form.end >= form.start
-      ? businessDayCount(form.start, form.end) * formBucket.hoursPerDay
-      : 0
+      ? chargeableDays(form.start, form.end, holidays)
+      : null
+  const derivedHours = span ? span.workdays * formBucket.hoursPerDay : 0
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
@@ -117,11 +125,72 @@ export function TimeOff({ store }: { store: Store }) {
       bucketId: form.bucketId,
       type: form.type,
       date: form.start,
+      ...(form.type === 'usage' && form.end > form.start ? { endDate: form.end } : {}),
       hours: signed,
       note: form.note.trim() || undefined,
     })
     setForm({ ...form, start: today, end: today, hours: '', note: '' })
   }
+
+  // --- planning ------------------------------------------------------------
+
+  const [wanted, setWanted] = useState(5)
+  const affordable = useMemo(
+    () =>
+      earliestAffordable(buckets, events, wanted, today, `${year + 1}-12-31`),
+    [buckets, events, wanted, today, year],
+  )
+
+  const primary = buckets[0]
+  const bridges = useMemo(
+    () => bestBridgePerHoliday(year, { maxPtoDays: 5, fromISO: today }).slice(0, 6),
+    [year, today],
+  )
+
+  /** Days banked by a date, across every bucket — what a plan has to fit inside. */
+  const daysBankedBy = (iso: string) =>
+    buckets.reduce((a, b) => a + balanceAsOf(b, events, iso) / b.hoursPerDay, 0)
+
+  const bookBridge = (plan: BridgePlan) => {
+    if (!primary) return
+    addEvent({
+      bucketId: primary.id,
+      type: 'usage',
+      date: plan.bookDates[0],
+      ...(plan.bookDates.length > 1
+        ? { endDate: plan.bookDates[plan.bookDates.length - 1] }
+        : {}),
+      hours: -plan.ptoDays * primary.hoursPerDay,
+      note: plan.holidays.map((h) => h.name).join(' + '),
+    })
+  }
+
+  // Every day a booking covers, so the calendar draws a week off as a week.
+  const marks = useMemo(() => {
+    const out = new Map<string, CalendarMark>()
+    for (const [date, name] of holidays) {
+      if (date.startsWith(String(year))) out.set(date, { kind: 'holiday', title: name, color: 'var(--warning)' })
+    }
+    for (const b of buckets) {
+      for (const e of events) {
+        if (e.bucketId !== b.id || e.type !== 'usage') continue
+        let cursor = e.date
+        const end = e.endDate ?? e.date
+        while (cursor <= end) {
+          const dow = new Date(`${cursor}T00:00:00Z`).getUTCDay()
+          // Weekends and holidays inside a trip weren't charged, so they aren't
+          // drawn as spent either.
+          if (dow !== 0 && dow !== 6 && !holidays.has(cursor)) {
+            out.set(cursor, { kind: 'booked', title: e.note ?? `${b.label} booked`, color: b.color })
+          }
+          const next = new Date(`${cursor}T00:00:00Z`)
+          next.setUTCDate(next.getUTCDate() + 1)
+          cursor = next.toISOString().slice(0, 10)
+        }
+      }
+    }
+    return out
+  }, [buckets, events, holidays, year])
 
   const breakdown = derived
     .filter((d) => Math.abs(d.balanceDays) > 0.001)
@@ -190,6 +259,130 @@ export function TimeOff({ store }: { store: Store }) {
       </div>
 
       <div className="card">
+        <h2>When can you take {wanted} {wanted === 1 ? 'day' : 'days'} off?</h2>
+        <p className="caption">
+          Balance projections say what you'll have. This says when — the first date the whole
+          request is covered, counting anything you've already booked.
+        </p>
+        <div className="row">
+          <label className="field" style={{ maxWidth: 160 }}>
+            Days wanted
+            <input
+              type="number"
+              min="1"
+              step="1"
+              value={wanted || ''}
+              onChange={(e) => setWanted(Math.max(0, Number(e.target.value)))}
+            />
+          </label>
+        </div>
+        <div className="verdict">
+          {!affordable ? (
+            <>
+              <div className="big">Not before {year + 1} is out</div>
+              <p className="qualifier">
+                {wanted} days is more than you'll have banked at any point through Dec 31, {year + 1}
+                {totals.monthlyAccrual > 0 && (
+                  <> at {hoursLabel(totals.monthlyAccrual)} a month</>
+                )}
+                . Either the request is too big or something already booked is in the way.
+              </p>
+            </>
+          ) : affordable.shortfallToday === 0 ? (
+            <>
+              <div className="big delta up">Today</div>
+              <p className="qualifier">
+                You have {days(totals.days)} banked, so a {wanted}-day break is already covered
+                {totals.value > 0 && (
+                  <> — worth {money(wanted * (derived[0]?.rate ?? 0) * (primary?.hoursPerDay ?? 8))} of salary</>
+                )}
+                .
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="big">{prettyDate(affordable.date)}</div>
+              <p className="qualifier">
+                You're {days(affordable.shortfallToday)} short today. By {prettyDate(affordable.date)}{' '}
+                you'll have {days(affordable.daysAvailable)} banked, which covers it.
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
+      {bridges.length > 0 && (
+        <div className="card">
+          <h2>Long weekends worth taking</h2>
+          <p className="caption">
+            A holiday next to a weekend is leverage: the runs below buy the most days off per day of
+            PTO spent. Ranked best first, from today onwards.
+          </p>
+          <div className="plan-list">
+            {bridges.map((plan) => {
+              const banked = daysBankedBy(plan.start)
+              const affordableThen = banked >= plan.ptoDays
+              return (
+                <div className="plan" key={`${plan.start}-${plan.end}`}>
+                  <span className="lede">
+                    {plan.totalDaysOff} days off for {plan.ptoDays}
+                  </span>
+                  <span className="detail">
+                    {prettyDate(plan.start)} – {prettyDate(plan.end)} · book{' '}
+                    {plan.bookDates.map((d) => prettyDate(d).replace(`, ${year}`, '')).join(', ')} ·{' '}
+                    {plan.holidays.map((h) => h.name).join(' + ')}
+                  </span>
+                  {!affordableThen && (
+                    <span className="pill unaffordable">
+                      only {Math.round(banked * 10) / 10}d banked by then
+                    </span>
+                  )}
+                  {primary && (
+                    <button
+                      className="action"
+                      onClick={() => bookBridge(plan)}
+                      disabled={!affordableThen}
+                      title={
+                        affordableThen
+                          ? `Book ${plan.ptoDays} days of ${primary.label}`
+                          : 'You will not have enough banked by then'
+                      }
+                    >
+                      Book it
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+          <p className="muted-note" style={{ marginTop: 12 }}>
+            US federal holidays, observed dates. If your employer's calendar differs, the arithmetic
+            here differs with it.
+          </p>
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Your {year}</h2>
+        <p className="caption">
+          Everything booked, and every holiday you don't need to spend a day on.
+        </p>
+        <YearCalendar year={year} marks={marks} today={today} />
+        <div className="legend">
+          <span className="item">
+            <span className="swatch" style={{ background: 'var(--warning)', opacity: 0.5 }} />
+            Federal holiday
+          </span>
+          {buckets.map((b) => (
+            <span className="item" key={b.id}>
+              <span className="swatch" style={{ background: b.color }} />
+              {b.label} booked
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="card">
         <h2>Log time</h2>
         <p className="caption">
           Book time off, record a floating holiday, or correct a balance. Everything is an event
@@ -249,8 +442,8 @@ export function TimeOff({ store }: { store: Store }) {
                   onChange={(e) => setForm({ ...form, end: e.target.value })}
                 />
                 <span className="hint">
-                  {derivedHours
-                    ? `${businessDayCount(form.start, form.end)} weekdays = ${hoursLabel(derivedHours)}`
+                  {span
+                    ? `${span.workdays} workdays = ${hoursLabel(derivedHours)}`
                     : 'weekends are not counted'}
                 </span>
               </label>
@@ -280,6 +473,14 @@ export function TimeOff({ store }: { store: Store }) {
               />
             </label>
           </div>
+          {span && span.holidays.length > 0 && (
+            <p className="muted-note" style={{ marginTop: 12 }}>
+              {span.holidays.map((h) => h.name).join(' and ')}{' '}
+              {span.holidays.length === 1 ? 'falls' : 'fall'} inside this span, so{' '}
+              {span.holidays.length === 1 ? 'it is' : 'they are'} not charged —{' '}
+              {span.workdays} days instead of {span.workdays + span.holidays.length}.
+            </p>
+          )}
           <div className="row" style={{ marginTop: 14 }}>
             <button className="action primary" type="submit">
               Add to ledger
@@ -323,7 +524,12 @@ export function TimeOff({ store }: { store: Store }) {
             )}
             {ledger.map((e) => (
               <tr key={`${e.bucket.id}-${e.id}`}>
-                <td>{prettyDate(e.date)}</td>
+                <td>
+                  {prettyDate(e.date)}
+                  {e.endDate && e.endDate !== e.date && (
+                    <span className="muted-note"> – {prettyDate(e.endDate)}</span>
+                  )}
+                </td>
                 <td>
                   <span className="item" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                     <span className="swatch" style={{ background: e.bucket.color }} />

@@ -23,6 +23,12 @@ export interface PtoEvent {
   type: PtoEventType
   /** ISO date, YYYY-MM-DD. */
   date: string
+  /**
+   * Last day of a multi-day booking. The balance still moves on `date` — this
+   * only records the span, so a week off can be drawn as a week rather than as
+   * a single dot on the Monday.
+   */
+  endDate?: string
   /** Signed hours: positive adds to balance, negative removes. */
   hours: number
   note?: string

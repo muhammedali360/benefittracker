@@ -4,8 +4,9 @@
  * fills, rounded data-ends, 2px lines, recessive grid, direct labels.
  */
 
-import { useId, useRef, useState } from 'react'
+import { useId, useMemo, useRef, useState } from 'react'
 import { money, hoursLabel, shortMonth, prettyDate } from './format'
+import { parseDate, toISO } from './engine/pto'
 
 interface TipState {
   x: number
@@ -346,6 +347,255 @@ export function BalanceLines({
         ))}
       </div>
       <Tooltip tip={tip} />
+    </div>
+  )
+}
+
+export interface TimelinePoint {
+  index: number
+  date: string
+  net: number
+  gross: number
+  retirement: number
+  employerMatch: number
+  socialSecurity: number
+  tax: number
+  event?: 'ss-cap' | 'deferral-cap'
+}
+
+const EVENT_COPY: Record<NonNullable<TimelinePoint['event']>, { label: string; tone: string }> = {
+  'ss-cap': { label: 'Social Security stops', tone: 'var(--good)' },
+  'deferral-cap': { label: '401(k) limit reached', tone: 'var(--critical)' },
+}
+
+/**
+ * Take-home, paycheck by paycheck.
+ *
+ * A step line rather than bars: the checks are near-identical in magnitude, so
+ * a zero-baselined bar chart would render the mid-year steps — the only thing
+ * worth looking at — as invisible. Lines carry no area, so a zoomed axis is
+ * legitimate here, and the floor is labelled outright rather than left to be
+ * inferred.
+ */
+export function PaycheckTimeline({ points }: { points: TimelinePoint[] }) {
+  const ref = useRef<SVGSVGElement>(null)
+  const [tip, setTip] = useState<TipState | null>(null)
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
+  const w = 720
+  const h = 210
+  const pad = { top: 18, right: 16, bottom: 30, left: 56 }
+
+  if (points.length < 2) return null
+
+  const nets = points.map((p) => p.net)
+  const lo = Math.min(...nets)
+  const hi = Math.max(...nets)
+  // A flat year still needs a sane band, or the line lands on the axis.
+  const padding = Math.max((hi - lo) * 0.35, hi * 0.02)
+  const minV = Math.max(0, lo - padding)
+  const maxV = hi + padding
+  const span = maxV - minV || 1
+
+  const n = points.length
+  const x = (i: number) => pad.left + (i / (n - 1)) * (w - pad.left - pad.right)
+  const y = (v: number) => pad.top + (1 - (v - minV) / span) * (h - pad.top - pad.bottom)
+
+  // Step path: each check holds its value until the next one lands.
+  const step = points
+    .flatMap((p, i) => {
+      const half = i < n - 1 ? (x(i) + x(i + 1)) / 2 : x(i)
+      return i === 0
+        ? [`M${pad.left},${y(p.net)}`, `L${half},${y(p.net)}`]
+        : [`L${x(i) - (x(i) - x(i - 1)) / 2},${y(p.net)}`, `L${half},${y(p.net)}`]
+    })
+    .join(' ')
+
+  const ticks = Array.from({ length: 4 }, (_, i) => minV + (span * i) / 3)
+
+  const onMove = (e: React.MouseEvent) => {
+    const rect = ref.current?.getBoundingClientRect()
+    if (!rect) return
+    const relX = ((e.clientX - rect.left) / rect.width) * w
+    const frac = (relX - pad.left) / (w - pad.left - pad.right)
+    const i = Math.max(0, Math.min(n - 1, Math.round(frac * (n - 1))))
+    const p = points[i]
+    setHoverIdx(i)
+    setTip({
+      x: e.clientX,
+      y: e.clientY,
+      title: `Paycheck ${p.index} · ${prettyDate(p.date)}`,
+      rows: [
+        { label: 'Take-home', value: money(p.net, true) },
+        { label: 'Gross', value: money(p.gross, true) },
+        { label: 'Tax withheld', value: money(p.tax, true) },
+        ...(p.retirement ? [{ label: '401(k)', value: money(p.retirement, true) }] : []),
+        ...(p.employerMatch ? [{ label: 'Match', value: money(p.employerMatch, true) }] : []),
+        ...(p.event ? [{ label: '', value: EVENT_COPY[p.event].label }] : []),
+      ],
+    })
+  }
+
+  return (
+    <div>
+      <svg
+        ref={ref}
+        viewBox={`0 0 ${w} ${h}`}
+        role="img"
+        aria-label="Take-home pay for each paycheck of the year"
+        onMouseMove={onMove}
+        onMouseLeave={() => {
+          setTip(null)
+          setHoverIdx(null)
+        }}
+        style={{ display: 'block', width: '100%', height: 'auto', cursor: 'crosshair' }}
+      >
+        {ticks.map((t, i) => (
+          <g key={i}>
+            <line x1={pad.left} x2={w - pad.right} y1={y(t)} y2={y(t)} stroke="var(--grid)" />
+            <text x={pad.left - 8} y={y(t) + 4} textAnchor="end" fontSize="11" fill="var(--text-muted)">
+              {money(t)}
+            </text>
+          </g>
+        ))}
+
+        {points.map((p, i) =>
+          p.event ? (
+            <g key={`ev-${p.index}`}>
+              <line
+                x1={x(i) - (x(1) - x(0)) / 2}
+                x2={x(i) - (x(1) - x(0)) / 2}
+                y1={pad.top}
+                y2={h - pad.bottom}
+                stroke={EVENT_COPY[p.event].tone}
+                strokeWidth="2"
+                strokeDasharray="4 3"
+                opacity="0.7"
+              />
+              <text
+                // Late-year events would overflow the right edge, so they label leftward.
+                x={x(i) - (x(1) - x(0)) / 2 + (i > n * 0.6 ? -6 : 6)}
+                textAnchor={i > n * 0.6 ? 'end' : 'start'}
+                y={pad.top + 10}
+                fontSize="11"
+                fontWeight="600"
+                fill={EVENT_COPY[p.event].tone}
+              >
+                {EVENT_COPY[p.event].label}
+              </text>
+            </g>
+          ) : null,
+        )}
+
+        <path d={step} fill="none" stroke="var(--series-net)" strokeWidth="2" strokeLinejoin="round" />
+
+        {hoverIdx !== null && (
+          <circle cx={x(hoverIdx)} cy={y(points[hoverIdx].net)} r="5" fill="var(--series-net)" stroke="var(--surface-1)" strokeWidth="2" />
+        )}
+
+        {points.map((p, i) =>
+          i % Math.ceil(n / 8) === 0 ? (
+            <text key={`x-${p.index}`} x={x(i)} y={h - pad.bottom + 16} textAnchor="middle" fontSize="11" fill="var(--text-muted)">
+              {shortMonth(p.date)}
+            </text>
+          ) : null,
+        )}
+
+        <line x1={pad.left} x2={w - pad.right} y1={h - pad.bottom} y2={h - pad.bottom} stroke="var(--axis)" />
+      </svg>
+      <p className="muted-note" style={{ marginTop: 8 }}>
+        Axis starts at {money(minV)}, not zero — the swing between checks is the point, and it is
+        small next to the checks themselves.
+      </p>
+      <Tooltip tip={tip} />
+    </div>
+  )
+}
+
+export interface CalendarMark {
+  /** Fill colour; omit for an unmarked day. */
+  color?: string
+  /** Shown on hover. */
+  title: string
+  kind: 'holiday' | 'booked' | 'suggested'
+}
+
+const WEEKDAY_INITIALS = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+
+/**
+ * The whole year at once, as twelve month grids.
+ *
+ * Weekday-aligned rather than a flat day strip, because the thing being looked
+ * for is shape: a holiday sitting next to a weekend, a booked run stretching
+ * across one. A strip hides exactly that.
+ */
+export function YearCalendar({
+  year,
+  marks,
+  today,
+}: {
+  year: number
+  marks: Map<string, CalendarMark>
+  today?: string
+}) {
+  const months = useMemo(
+    () =>
+      Array.from({ length: 12 }, (_, m) => {
+        const first = new Date(Date.UTC(year, m, 1))
+        const daysInMonth = new Date(Date.UTC(year, m + 1, 0)).getUTCDate()
+        return {
+          index: m,
+          label: first.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }),
+          // Leading blanks align the 1st under its weekday column.
+          lead: first.getUTCDay(),
+          days: Array.from({ length: daysInMonth }, (_, d) => toISO(new Date(Date.UTC(year, m, d + 1)))),
+        }
+      }),
+    [year],
+  )
+
+  return (
+    <div className="year-cal">
+      {months.map((month) => (
+        <div className="month" key={month.index}>
+          <div className="month-label">{month.label}</div>
+          <div className="dow">
+            {WEEKDAY_INITIALS.map((d, i) => (
+              <span key={i} aria-hidden="true">
+                {d}
+              </span>
+            ))}
+          </div>
+          <div className="days">
+            {Array.from({ length: month.lead }, (_, i) => (
+              <span className="day blank" key={`b-${i}`} />
+            ))}
+            {month.days.map((iso) => {
+              const mark = marks.get(iso)
+              const dow = parseDate(iso).getUTCDay()
+              const weekend = dow === 0 || dow === 6
+              const cls = [
+                'day',
+                weekend ? 'weekend' : '',
+                mark ? `mark-${mark.kind}` : '',
+                iso === today ? 'today' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')
+              return (
+                <span
+                  key={iso}
+                  className={cls}
+                  style={mark?.color ? ({ '--mark': mark.color } as React.CSSProperties) : undefined}
+                  title={mark ? `${prettyDate(iso)} — ${mark.title}` : prettyDate(iso)}
+                >
+                  {Number(iso.slice(8))}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   )
 }

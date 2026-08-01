@@ -2,13 +2,15 @@ import { useState } from 'react'
 import { useStore } from './store'
 import { Paycheck } from './views/Paycheck'
 import { TimeOff } from './views/TimeOff'
+import { Plan } from './views/Plan'
 import { Settings } from './views/Settings'
 import './theme.css'
 
-type Tab = 'paycheck' | 'timeoff' | 'settings'
+type Tab = 'paycheck' | 'plan' | 'timeoff' | 'settings'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'paycheck', label: 'Paycheck' },
+  { id: 'plan', label: 'Plan' },
   { id: 'timeoff', label: 'Time Off' },
   { id: 'settings', label: 'Settings' },
 ]
@@ -42,23 +44,25 @@ export default function App() {
         ))}
       </nav>
 
-      {tab === 'paycheck' &&
-        (needsSalary ? (
-          <div className="card empty-state">
-            <div className="value">
-              Add your salary to see your paycheck broken down.
-            </div>
-            <p className="muted-note" style={{ marginBottom: 16 }}>
-              Nothing is shown until then — an invented number would look just like a real one.
-              Time Off works without it.
-            </p>
-            <button className="action primary" onClick={() => setTab('settings')}>
-              Go to Settings
-            </button>
+      {/* Both money tabs are gated on a salary — an invented one would look
+          just like a real one. Time Off stands on its own without it. */}
+      {(tab === 'paycheck' || tab === 'plan') && needsSalary && (
+        <div className="card empty-state">
+          <div className="value">
+            Add your salary to see {tab === 'plan' ? 'what a raise or a bonus is worth' : 'your paycheck broken down'}.
           </div>
-        ) : (
-          <Paycheck profile={store.state.profile} />
-        ))}
+          <p className="muted-note" style={{ marginBottom: 16 }}>
+            Nothing is shown until then — an invented number would look just like a real one.
+            Time Off works without it.
+          </p>
+          <button className="action primary" onClick={() => setTab('settings')}>
+            Go to Settings
+          </button>
+        </div>
+      )}
+
+      {tab === 'paycheck' && !needsSalary && <Paycheck profile={store.state.profile} />}
+      {tab === 'plan' && !needsSalary && <Plan store={store} />}
 
       {tab === 'timeoff' && <TimeOff store={store} />}
       {tab === 'settings' && <Settings store={store} />}
