@@ -105,8 +105,10 @@ export function computePaycheck(
 
   // Section 125 cafeteria-plan deductions escape income tax AND FICA.
   const ficaExemptPretax = profile.hsaAnnual + profile.fsaAnnual + profile.premiumsAnnual
-  // Traditional 401(k) escapes income tax but is still FICA wages.
-  const retirement = gross * profile.retirement401kPercent
+  // Traditional 401(k) escapes income tax but is still FICA wages. The elective
+  // deferral is hard-capped by §402(g) — electing 30% of a large salary does not
+  // shelter 30%, it shelters the limit and the rest lands in your paycheck.
+  const retirement = Math.min(gross * profile.retirement401kPercent, taxYear.limits.elective401k)
 
   const ficaWages = Math.max(0, gross - ficaExemptPretax)
   const agi = Math.max(0, gross - ficaExemptPretax - retirement)
@@ -254,5 +256,166 @@ export function matchForfeitureRisk(
     hitsLimitEarly: true,
     limitPeriod,
     forfeitedMatch: matchablePerPeriod * (periods - limitPeriod),
+  }
+}
+
+// --- bonuses ---------------------------------------------------------------
+
+export interface BonusBreakdown {
+  gross: number
+  /** Deferred to the 401(k) out of the bonus, if the plan allows it. */
+  retirement: number
+  federalWithheld: number
+  stateWithheld: number
+  socialSecurity: number
+  medicare: number
+  additionalMedicare: number
+  disability: number
+  totalWithheld: number
+  /** What actually lands in the account. */
+  net: number
+  /** Share of the bonus you keep after withholding. */
+  keepRate: number
+  /** Income tax the bonus genuinely adds, at your bracket — not the flat rate. */
+  trueIncomeTax: number
+  /**
+   * Withheld income tax minus what the bonus really costs. Positive means the
+   * flat supplemental rate over-withheld and April pays it back; negative means
+   * it under-withheld and April collects.
+   */
+  withholdingGap: number
+}
+
+/**
+ * A bonus is not taxed at a special rate — it's *withheld* at one. Employers
+ * apply a flat supplemental percentage (22% federal under §3402(g), higher over
+ * $1M) instead of running it through your brackets, so the number that lands in
+ * your account has almost nothing to do with what the bonus finally costs you.
+ *
+ * Both figures are returned, because the gap between them is the entire point:
+ * under-withholding shows up as an April bill nobody budgeted for, and
+ * over-withholding is an interest-free loan to the Treasury.
+ */
+export function computeBonus(
+  profile: CompProfile,
+  bonusGross: number,
+  taxYear: TaxYear = getTaxYear(profile.year),
+  deferPercent = 0,
+): BonusBreakdown {
+  const { federal } = taxYear
+  const state = taxYear.states[profile.state]
+  if (!state) throw new Error(`No tax data for state ${profile.state}`)
+  if (bonusGross <= 0) {
+    return {
+      gross: 0, retirement: 0, federalWithheld: 0, stateWithheld: 0, socialSecurity: 0,
+      medicare: 0, additionalMedicare: 0, disability: 0, totalWithheld: 0, net: 0,
+      keepRate: 0, trueIncomeTax: 0, withholdingGap: 0,
+    }
+  }
+
+  const salaryRun = computePaycheck(profile, taxYear)
+  // Deferrals out of a bonus share the same §402(g) limit as payroll deferrals.
+  const deferralRoom = Math.max(0, taxYear.limits.elective401k - salaryRun.retirement)
+  const retirement = Math.min(bonusGross * deferPercent, deferralRoom)
+  const taxableBonus = bonusGross - retirement
+
+  // Flat supplemental withholding, with the higher rate on the excess over $1M.
+  const sup = federal.supplemental
+  const overThreshold = Math.max(0, taxableBonus - sup.threshold)
+  const federalWithheld =
+    (taxableBonus - overThreshold) * sup.rate + overThreshold * sup.rateAboveThreshold
+  const stateWithheld = taxableBonus * (state.supplementalRate ?? 0)
+
+  // FICA has no supplemental concept — the bonus stacks straight onto YTD wages.
+  const ssRoom = Math.max(0, federal.socialSecurity.wageBase - salaryRun.ficaWages)
+  const socialSecurity = Math.min(bonusGross, ssRoom) * federal.socialSecurity.rate
+  const medicare = bonusGross * federal.medicare.rate
+  const surtaxBase = federal.additionalMedicare.withholdingThreshold
+  const additionalMedicare =
+    (Math.max(0, salaryRun.ficaWages + bonusGross - surtaxBase) -
+      Math.max(0, salaryRun.ficaWages - surtaxBase)) *
+    federal.additionalMedicare.rate
+
+  const di = state.disabilityInsurance
+  const disability = di
+    ? (di.wageBase === null
+        ? bonusGross
+        : Math.max(0, Math.min(bonusGross, di.wageBase - salaryRun.ficaWages))) * di.rate
+    : 0
+
+  const totalWithheld =
+    federalWithheld + stateWithheld + socialSecurity + medicare + additionalMedicare + disability
+
+  // The honest number: what stacking `taxableBonus` on top of existing taxable
+  // income costs once it runs through the actual brackets.
+  const fs = profile.filingStatus
+  const trueFederal =
+    taxFromBrackets(salaryRun.federalTaxable + taxableBonus, federal.brackets[fs]) -
+    taxFromBrackets(salaryRun.federalTaxable, federal.brackets[fs])
+  const trueState =
+    taxFromBrackets(salaryRun.stateTaxable + taxableBonus, state.brackets[fs]) -
+    taxFromBrackets(salaryRun.stateTaxable, state.brackets[fs])
+  const trueIncomeTax = trueFederal + trueState
+
+  return {
+    gross: bonusGross,
+    retirement,
+    federalWithheld,
+    stateWithheld,
+    socialSecurity,
+    medicare,
+    additionalMedicare,
+    disability,
+    totalWithheld,
+    net: bonusGross - retirement - totalWithheld,
+    keepRate: (bonusGross - retirement - totalWithheld) / bonusGross,
+    trueIncomeTax,
+    withholdingGap: federalWithheld + stateWithheld - trueIncomeTax,
+  }
+}
+
+// --- scenario comparison ---------------------------------------------------
+
+export interface ScenarioDelta {
+  base: PaycheckBreakdown
+  variant: PaycheckBreakdown
+  grossDelta: number
+  netDelta: number
+  taxDelta: number
+  matchDelta: number
+  /** Take-home + employer match, i.e. total value actually received. */
+  totalValueDelta: number
+  /**
+   * Share of the extra gross that survives to take-home. For a raise this is
+   * the only number that matters, and it is never the headline percentage.
+   */
+  keepRate: number
+}
+
+/**
+ * Two profiles, side by side. A $15k raise, a move to Texas and a bump in the
+ * 401(k) rate are all the same operation: change one field and ask what the
+ * take-home actually does.
+ */
+export function compareProfiles(
+  base: CompProfile,
+  variant: CompProfile,
+  taxYear?: TaxYear,
+): ScenarioDelta {
+  const b = computePaycheck(base, taxYear ?? getTaxYear(base.year))
+  const v = computePaycheck(variant, taxYear ?? getTaxYear(variant.year))
+  const grossDelta = v.gross - b.gross
+  const netDelta = v.net - b.net
+  const matchDelta = v.employerMatch - b.employerMatch
+  return {
+    base: b,
+    variant: v,
+    grossDelta,
+    netDelta,
+    taxDelta: v.totalTax - b.totalTax,
+    matchDelta,
+    totalValueDelta: netDelta + matchDelta,
+    // With no change in gross, "keep rate" has no meaning — don't invent one.
+    keepRate: grossDelta !== 0 ? netDelta / grossDelta : 0,
   }
 }

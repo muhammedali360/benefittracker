@@ -30,6 +30,12 @@ export interface FederalParams {
     withholdingThreshold: number
     filingThreshold: Record<FilingStatus, number>
   }
+  /**
+   * Flat withholding on supplemental wages (bonuses, commissions) when they're
+   * paid separately from regular wages. This is a *withholding* rate, not a tax
+   * rate — the bonus is ordinary income and reconciles at your bracket in April.
+   */
+  supplemental: { rate: number; threshold: number; rateAboveThreshold: number }
   source: string
 }
 
@@ -43,6 +49,8 @@ export interface StateParams {
   surtax?: { rate: number; threshold: number; label: string }
   /** Disability insurance withholding. `wageBase: null` means uncapped. */
   disabilityInsurance?: { rate: number; wageBase: number | null; label: string }
+  /** Flat state withholding on bonuses. Omit where the state has no separate rate. */
+  supplementalRate?: number
   source: string
   /**
    * Set when the figures are not yet published for the labelled year and we're
@@ -101,7 +109,10 @@ const FEDERAL_2026: FederalParams = {
     // Statutory, not inflation-indexed — unchanged since 2013.
     filingThreshold: { single: 200_000, mfj: 250_000 },
   },
-  source: 'IRS Rev. Proc. 2025-32; SSA/Federal Register 2025-19763',
+  // §3402(g)(1)(A) / Reg. §31.3402(g)-1. OBBBA kept the top rate at 37%, so the
+  // mandatory rate on supplemental wages above $1M stays there too.
+  supplemental: { rate: 0.22, threshold: 1_000_000, rateAboveThreshold: 0.37 },
+  source: 'IRS Rev. Proc. 2025-32; IRS Pub. 15-T (2026); SSA/Federal Register 2025-19763',
 }
 
 const CALIFORNIA_2026: StateParams = {
@@ -140,7 +151,10 @@ const CALIFORNIA_2026: StateParams = {
   // SB 951 removed the taxable wage ceiling effective 2024 — SDI is uncapped
   // and scales linearly with no maximum. Rate is final for 2026.
   disabilityInsurance: { rate: 0.013, wageBase: null, label: 'CA SDI' },
-  source: 'CA FTB 2025 Schedules X/Y; CA EDD 2026 rates',
+  // EDD DE 44: bonuses and stock options withhold at 10.23%; other supplemental
+  // wages at 6.6%. Bonuses are the case being modelled here.
+  supplementalRate: 0.1023,
+  source: 'CA FTB 2025 Schedules X/Y; CA EDD DE 44 (2026 rates)',
   provenanceNote:
     'CA has not published TY2026 brackets yet (released each fall). Using TY2025 figures, which is what CA payroll withholding runs on during 2026. SDI 1.3% is final for 2026.',
 }
@@ -171,6 +185,8 @@ export const TAX_YEARS: Record<number, TaxYear> = {
         },
         standardDeduction: { single: 0, mfj: 0 },
         exemptionCredit: { single: 0, mfj: 0 },
+        // A flat state has no separate supplemental rate — it's the same rate.
+        supplementalRate: 0.0495,
         source: 'IL flat rate 4.95%',
       },
     },

@@ -94,6 +94,102 @@ export function businessDayCount(startISO: string, endISO: string): number {
   return count
 }
 
+export interface ChargeableDays {
+  /** Weekdays in the span that actually consume the balance. */
+  workdays: number
+  /** Weekdays skipped because the office was closed anyway. */
+  holidays: { date: string; name: string }[]
+  weekendDays: number
+}
+
+/**
+ * Weekdays in a span, minus the ones that are company holidays. Booking the
+ * week of Thanksgiving costs four days, not five, and quietly charging five is
+ * how a tracker invents a day you don't have.
+ */
+export function chargeableDays(
+  startISO: string,
+  endISO: string,
+  holidays: Map<string, string> = new Map(),
+): ChargeableDays {
+  let workdays = 0
+  let weekendDays = 0
+  const hit: { date: string; name: string }[] = []
+  let cursor = parseDate(startISO)
+  const end = parseDate(endISO)
+  while (cursor <= end) {
+    const iso = toISO(cursor)
+    const day = cursor.getUTCDay()
+    if (day === 0 || day === 6) weekendDays++
+    else {
+      const name = holidays.get(iso)
+      if (name) hit.push({ date: iso, name })
+      else workdays++
+    }
+    cursor = addDays(cursor, 1)
+  }
+  return { workdays, holidays: hit, weekendDays }
+}
+
+export interface AffordabilityResult {
+  /** Earliest date the requested time is fully covered. */
+  date: string
+  /** Days available on that date, across every bucket. */
+  daysAvailable: number
+  /** Days short right now — zero if it's already affordable. */
+  shortfallToday: number
+}
+
+/**
+ * "When can I actually take a week off?"
+ *
+ * Balance projections answer what you'll have; this answers the question people
+ * really ask, which is when. Buckets are summed in days rather than hours,
+ * because a bucket can define its own workday length and adding raw hours
+ * across two different workday lengths gives a number that means nothing.
+ */
+export function earliestAffordable(
+  buckets: BucketConfig[],
+  events: PtoEvent[],
+  daysWanted: number,
+  fromISO: string,
+  horizonISO: string,
+): AffordabilityResult | null {
+  if (daysWanted <= 0 || buckets.length === 0) return null
+
+  // Replay each bucket once over the whole horizon, then read balances off the
+  // ledgers — rebuilding per candidate date would be O(days²) for no gain.
+  const ledgers = buckets.map((b) => ({ bucket: b, entries: buildLedger(b, events, horizonISO) }))
+
+  const daysAvailableOn = (iso: string) =>
+    ledgers.reduce((total, { bucket, entries }) => {
+      let balance = 0
+      for (const e of entries) {
+        if (e.date > iso) break
+        balance = e.balance
+      }
+      return total + balance / bucket.hoursPerDay
+    }, 0)
+
+  const today = daysAvailableOn(fromISO)
+  let cursor = parseDate(fromISO)
+  const end = parseDate(horizonISO)
+
+  while (cursor <= end) {
+    const iso = toISO(cursor)
+    const available = daysAvailableOn(iso)
+    if (available >= daysWanted) {
+      return {
+        date: iso,
+        daysAvailable: available,
+        shortfallToday: Math.max(0, daysWanted - today),
+      }
+    }
+    cursor = addDays(cursor, 1)
+  }
+  return null
+}
+
 /**
  * Synthesise the accrual events a bucket's schedule produces between its start
  * date and `throughISO`. These are never persisted — they're recomputed on

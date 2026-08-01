@@ -8,6 +8,7 @@ import {
   businessDayCount,
   inclusiveDayCount,
   hourlyRate,
+  earliestAffordable,
   type BucketConfig,
   type PtoEvent,
 } from './pto'
@@ -217,5 +218,51 @@ describe('dollar value of time', () => {
     expect(hourlyRate(104_000, 8)).toBeCloseTo(50, 6)
     // A full 10-day balance is worth two weeks of salary.
     expect(hourlyRate(104_000, 8) * 80).toBeCloseTo(4_000, 6)
+  })
+})
+
+describe('earliestAffordable', () => {
+  it('answers "today" when the balance already covers it', () => {
+    // 10 days/yr accrued monthly: by Dec 31 the balance is a full 10 days.
+    const r = earliestAffordable([pto], [], 5, '2026-12-31', '2027-12-31')
+    expect(r?.date).toBe('2026-12-31')
+    expect(r?.shortfallToday).toBe(0)
+  })
+
+  it('finds the accrual date the balance finally covers the request', () => {
+    // Monthly accrual is 6.67h; four days = 32h needs five months of accrual.
+    const r = earliestAffordable([pto], [], 4, '2026-01-01', '2026-12-31')
+    expect(r?.date).toBe('2026-05-31')
+    expect(r!.daysAvailable).toBeGreaterThanOrEqual(4)
+    expect(r?.shortfallToday).toBeCloseTo(4, 6)
+  })
+
+  it('sums across buckets in days, not hours', () => {
+    // A grant in the floating bucket brings the affordable date forward.
+    const grant: PtoEvent = {
+      id: 'g', bucketId: 'floating', type: 'grant', date: '2026-02-01', hours: 16,
+    }
+    const alone = earliestAffordable([pto], [grant], 4, '2026-01-01', '2026-12-31')
+    const both = earliestAffordable([pto, floating], [grant], 4, '2026-01-01', '2026-12-31')
+    expect(both!.date < alone!.date).toBe(true)
+  })
+
+  it('accounts for time already booked later in the year', () => {
+    const booked: PtoEvent = {
+      id: 'u', bucketId: 'pto', type: 'usage', date: '2026-06-15', hours: -40,
+    }
+    const clean = earliestAffordable([pto], [], 5, '2026-01-01', '2026-12-31')
+    const spent = earliestAffordable([pto], [booked], 5, '2026-01-01', '2026-12-31')
+    // Spending 5 days in June pushes the next 5-day trip out — or off the year.
+    expect(spent === null || spent.date > clean!.date).toBe(true)
+  })
+
+  it('returns null when the horizon never gets there', () => {
+    expect(earliestAffordable([pto], [], 40, '2026-01-01', '2026-12-31')).toBeNull()
+  })
+
+  it('refuses to answer a request for no time off', () => {
+    expect(earliestAffordable([pto], [], 0, '2026-01-01', '2026-12-31')).toBeNull()
+    expect(earliestAffordable([], [], 5, '2026-01-01', '2026-12-31')).toBeNull()
   })
 })
