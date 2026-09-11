@@ -14,8 +14,6 @@ export const daysLabel = (days: number) => {
   return `${rounded} ${Math.abs(rounded) === 1 ? 'day' : 'days'}`
 }
 
-export const hoursAsDays = (hours: number, hoursPerDay: number) => daysLabel(hours / hoursPerDay)
-
 export const hoursLabel = (hours: number) => `${Math.round(hours * 10) / 10}h`
 
 export const prettyDate = (iso: string) =>
@@ -32,4 +30,13 @@ export const shortMonth = (iso: string) =>
     timeZone: 'UTC',
   })
 
-export const todayISO = () => new Date().toISOString().slice(0, 10)
+/**
+ * Today in the user's own calendar. `toISOString()` is UTC, which at 8pm in
+ * California is already tomorrow — and "tomorrow" is the wrong day to mark
+ * on a calendar or to charge a booking against.
+ */
+export const todayISO = () => {
+  const d = new Date()
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}

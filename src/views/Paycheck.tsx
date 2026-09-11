@@ -94,27 +94,29 @@ export function Paycheck({ profile }: { profile: CompProfile }) {
         )}
       </div>
 
-      {timeline.periods.length > 0 && (
+      {/* A flat year is one sentence, not a chart of a horizontal line. */}
+      {timeline.periods.length > 0 && timeline.spread > 1 ? (
         <div className="card">
           <h2>Every paycheck this year</h2>
           <p className="caption">
-            {timeline.spread > 1 ? (
-              <>
-                Your checks are not all the same. The smallest is{' '}
-                {money(timeline.smallest!.net, true)} and the largest{' '}
-                {money(timeline.largest!.net, true)} — a {money(timeline.spread, true)} swing, driven
-                by the wage-base and contribution limits below.
-              </>
-            ) : (
-              <>
-                Every check this year lands at {money(timeline.largest!.net, true)}. Nothing crosses
-                a wage base or a contribution limit, so nothing steps.
-              </>
-            )}
+            Your checks are not all the same. The smallest is{' '}
+            {money(timeline.smallest!.net, true)} and the largest{' '}
+            {money(timeline.largest!.net, true)} — a {money(timeline.spread, true)} swing, driven by
+            the wage-base and contribution limits below.
           </p>
           <PaycheckTimeline points={timeline.periods} />
         </div>
-      )}
+      ) : timeline.periods.length > 0 ? (
+        <div className="callout">
+          <span className="icon" aria-hidden="true">
+            =
+          </span>
+          <span>
+            <strong>Every check this year lands at {money(timeline.largest!.net, true)}.</strong>{' '}
+            Nothing crosses a wage base or a contribution limit, so nothing steps.
+          </span>
+        </div>
+      ) : null}
 
       <div className="card">
         <h2>Where your gross pay goes</h2>

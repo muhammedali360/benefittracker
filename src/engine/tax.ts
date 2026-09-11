@@ -32,6 +32,12 @@ export interface CompProfile {
   /** Employer match as a percent of gross, capped at `matchLimitPercent`. */
   employerMatchPercent: number
   employerMatchLimitPercent: number
+  /**
+   * Any real pay date, ISO. Weekly and biweekly checks step from it, so the
+   * paycheck timeline and per-paycheck accruals land on the actual days.
+   * Absent, the first Friday of the year stands in.
+   */
+  firstPayDate?: string
 }
 
 export interface LineItem {
@@ -218,7 +224,7 @@ export function socialSecurityCutoff(
   const periodIndex = Math.ceil(wageBase / perPeriod)
   // The real pay date, so the callout lands on the same day the timeline chart
   // draws the step.
-  const date = payDates(profile)[periodIndex - 1]
+  const date = payDates(profile, profile.firstPayDate)[periodIndex - 1]
   return { periodIndex, date }
 }
 

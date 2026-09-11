@@ -23,10 +23,13 @@
 
   --radius: 10px;
   --font: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light;
 }
 
+/* Dark is the system default unless the user pins light; pinning dark
+   applies the same set regardless of the OS. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme='light']) {
     --surface-1: #1a1a19;
     --page: #0d0d0d;
     --text-primary: #ffffff;
@@ -43,7 +46,28 @@
     --series-state: #d95926;
 
     --success-text: #0ca30c;
+    color-scheme: dark;
   }
+}
+
+:root[data-theme='dark'] {
+  --surface-1: #1a1a19;
+  --page: #0d0d0d;
+  --text-primary: #ffffff;
+  --text-secondary: #c3c2b7;
+  --text-muted: #898781;
+  --grid: #2c2c2a;
+  --axis: #383835;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --series-net: #3987e5;
+  --series-pretax: #199e70;
+  --series-fica: #c98500;
+  --series-federal: #9085e9;
+  --series-state: #d95926;
+
+  --success-text: #0ca30c;
+  color-scheme: dark;
 }
 
 * {
@@ -90,6 +114,11 @@ nav.tabs {
   border-bottom: 1px solid var(--border);
   margin-bottom: 24px;
   flex-wrap: wrap;
+  /* Long pages: the tabs stay reachable without scrolling back up. */
+  position: sticky;
+  top: 0;
+  background: var(--page);
+  z-index: 10;
 }
 
 nav.tabs button {
@@ -664,4 +693,173 @@ table.data tr.editing td {
 
 .card-head h2 {
   margin-bottom: 4px;
+}
+
+/* --- inputs with units --------------------------------------------------- */
+
+label.field .num-wrap {
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--page);
+}
+
+label.field .num-wrap:focus-within {
+  outline: 2px solid var(--series-net);
+  outline-offset: -1px;
+}
+
+label.field .num-wrap input {
+  border: none;
+  background: none;
+  flex: 1;
+  min-width: 0;
+}
+
+label.field .num-wrap input:focus {
+  outline: none;
+}
+
+label.field .adorn {
+  padding: 0 10px;
+  font-size: 13px;
+  color: var(--text-muted);
+  flex: none;
+}
+
+label.field .adorn + input {
+  padding-left: 0;
+}
+
+label.field input:focus-visible,
+label.field select:focus-visible,
+button:focus-visible,
+nav.tabs button:focus-visible {
+  outline: 2px solid var(--series-net);
+  outline-offset: 1px;
+}
+
+button.action:hover:not(:disabled) {
+  border-color: var(--axis);
+}
+
+button.action.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+button.action:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --- toast --------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--text-primary);
+  color: var(--page);
+  font-size: 13px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  z-index: 30;
+  max-width: calc(100vw - 32px);
+}
+
+.toast button {
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: none;
+  color: var(--series-net);
+  cursor: pointer;
+  padding: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .toast button {
+    color: #8dc0ff;
+  }
+}
+
+:root[data-theme='dark'] .toast button {
+  color: #8dc0ff;
+}
+
+/* --- masthead tools ------------------------------------------------------ */
+
+.masthead-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.seg button {
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 9px;
+  border: none;
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.seg button + button {
+  border-left: 1px solid var(--border);
+}
+
+.seg button[aria-pressed='true'] {
+  background: var(--text-primary);
+  color: var(--page);
+}
+
+.field-error {
+  color: var(--critical);
+  font-size: 12px;
+}
+
+.plan .pill.booked {
+  color: var(--success-text);
+  border-color: color-mix(in srgb, var(--good) 45%, transparent);
+}
+
+/* --- print: the page is the report ---------------------------------------- */
+
+@media print {
+  nav.tabs,
+  .masthead-tools,
+  .chart-toggle,
+  .ledger-tools,
+  button.action,
+  .toast,
+  form {
+    display: none !important;
+  }
+
+  .app {
+    max-width: none;
+    padding: 0;
+  }
+
+  .card,
+  .tile {
+    break-inside: avoid;
+    border-color: #ccc;
+  }
 }

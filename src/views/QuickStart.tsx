@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { useStore } from '../store'
 import { PERIODS_PER_YEAR, type PayFrequency } from '../engine/tax'
 import { getTaxYear } from '../engine/taxData'
+import { NumberInput } from '../components/NumberInput'
 
 type Store = ReturnType<typeof useStore>
 
@@ -23,10 +24,10 @@ export function QuickStart({
 }) {
   const { profile } = store.state
   const taxYear = getTaxYear(profile.year)
-  const [salary, setSalary] = useState('')
+  const [salary, setSalary] = useState(0)
   const [state, setState] = useState(profile.state)
   const [payFrequency, setPayFrequency] = useState<PayFrequency>(profile.payFrequency)
-  const valid = Number(salary) > 0
+  const valid = salary > 0
 
   return (
     <div className="card empty-state quickstart">
@@ -37,19 +38,18 @@ export function QuickStart({
         onSubmit={(e) => {
           e.preventDefault()
           if (!valid) return
-          store.setProfile({ annualSalary: Number(salary), state, payFrequency })
+          store.setProfile({ annualSalary: salary, state, payFrequency })
         }}
       >
         <div className="field-grid">
           <label className="field">
             Annual salary
-            <input
-              type="number"
-              inputMode="numeric"
+            <NumberInput
+              prefix="$"
               autoFocus
               value={salary}
               placeholder="e.g. 120000"
-              onChange={(e) => setSalary(e.target.value)}
+              onChange={(n) => setSalary(n ?? 0)}
             />
           </label>
           <label className="field">

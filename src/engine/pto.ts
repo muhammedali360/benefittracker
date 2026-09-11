@@ -8,6 +8,10 @@
  * as "what is it today" — just with a later cutoff.
  */
 
+import { addDays, endOfMonth, parseDate, toISO } from './dates'
+import { payDates } from './payDates'
+import { PERIODS_PER_YEAR, type PayFrequency } from './payFrequency'
+
 export type PtoEventType =
   | 'accrual' // earned on schedule
   | 'grant' // one-off award (floating holiday, comp day)
@@ -50,6 +54,13 @@ export interface BucketConfig {
   /** Hours allowed to survive into the next year. null = unlimited. */
   carryoverCapHours: number | null
   color: string
+  /**
+   * Only meaningful for `per-paycheck` accrual: the pay cadence, and a known
+   * pay date to anchor weekly/biweekly schedules. Injected from the profile
+   * by the view rather than stored per bucket.
+   */
+  payFrequency?: PayFrequency
+  payAnchor?: string
 }
 
 export interface LedgerEntry extends PtoEvent {
@@ -59,26 +70,9 @@ export interface LedgerEntry extends PtoEvent {
   cappedHours?: number
 }
 
-// --- date helpers (all UTC, date-only, to dodge timezone drift) ---
-
-export function parseDate(iso: string): Date {
-  const [y, m, d] = iso.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d))
-}
-
-export function toISO(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
-
-function endOfMonth(year: number, monthIndex: number): Date {
-  return new Date(Date.UTC(year, monthIndex + 1, 0))
-}
-
-function addDays(d: Date, n: number): Date {
-  const out = new Date(d)
-  out.setUTCDate(out.getUTCDate() + n)
-  return out
-}
+// Date helpers live in ./dates; re-exported because charts and bridge reach
+// for them through this module.
+export { parseDate, toISO }
 
 /** Whole days between two ISO dates, inclusive of both endpoints. */
 export function inclusiveDayCount(startISO: string, endISO: string): number {
@@ -230,10 +224,8 @@ export function generateAccruals(bucket: BucketConfig, throughISO: string): PtoE
     return events
   }
 
-  const perPeriod =
-    bucket.accrualKind === 'monthly' ? annualHours / 12 : annualHours / 26
-
   if (bucket.accrualKind === 'monthly') {
+    const perPeriod = annualHours / 12
     // Credited at the end of each month.
     let cursor = endOfMonth(start.getUTCFullYear(), start.getUTCMonth())
     while (cursor <= through) {
@@ -253,19 +245,26 @@ export function generateAccruals(bucket: BucketConfig, throughISO: string): PtoE
     return events
   }
 
-  // per-paycheck: every 14 days from the accrual start.
-  let cursor = new Date(start)
-  while (cursor <= through) {
-    events.push({
-      id: `accrual-${bucket.id}-${toISO(cursor)}`,
-      bucketId: bucket.id,
-      type: 'accrual',
-      date: toISO(cursor),
-      hours: perPeriod,
-      note: 'Per-paycheck accrual',
-      generated: true,
-    })
-    cursor = addDays(cursor, 14)
+  // per-paycheck: one accrual on every real pay date. Weekly and biweekly
+  // schedules anchor on a known pay date (or the accrual start); semimonthly
+  // and monthly are calendar-driven and need no anchor.
+  const payFrequency = bucket.payFrequency ?? 'biweekly'
+  const perPeriod = annualHours / PERIODS_PER_YEAR[payFrequency]
+  const anchor = bucket.payAnchor ?? bucket.accrualStart
+  for (let y = start.getUTCFullYear(); y <= through.getUTCFullYear(); y++) {
+    for (const date of payDates({ year: y, payFrequency }, anchor)) {
+      const when = parseDate(date)
+      if (when < start || when > through) continue
+      events.push({
+        id: `accrual-${bucket.id}-${date}`,
+        bucketId: bucket.id,
+        type: 'accrual',
+        date,
+        hours: perPeriod,
+        note: 'Per-paycheck accrual',
+        generated: true,
+      })
+    }
   }
   return events
 }
