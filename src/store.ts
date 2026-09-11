@@ -55,6 +55,7 @@ export const initialState: AppState = {
     premiumsAnnual: 0,
     employerMatchPercent: 0,
     employerMatchLimitPercent: 0,
+    firstPayDate: undefined,
   },
   buckets: [
     {
@@ -112,9 +113,11 @@ function load(): AppState {
 
 export function useStore() {
   const [state, setState] = useState<AppState>(load)
+  const [savedAt, setSavedAt] = useState<Date | null>(null)
 
   useEffect(() => {
     localStorage.setItem(KEY, JSON.stringify(state))
+    setSavedAt(new Date())
   }, [state])
 
   const setProfile = useCallback((patch: Partial<CompProfile>) => {
@@ -176,6 +179,13 @@ export function useStore() {
     }))
   }, [])
 
+  /** Puts a deleted event back, id and all — the other half of an undo. */
+  const restoreEvent = useCallback((event: PtoEvent) => {
+    setState((s) =>
+      s.events.some((e) => e.id === event.id) ? s : { ...s, events: [...s.events, event] },
+    )
+  }, [])
+
   const removeEvent = useCallback((id: string) => {
     setState((s) => ({ ...s, events: s.events.filter((e) => e.id !== id) }))
   }, [])
@@ -191,7 +201,13 @@ export function useStore() {
   }, [state])
 
   const importJSON = useCallback(async (file: File) => {
-    setState(merge(JSON.parse(await file.text()) as Partial<AppState>))
+    const parsed: unknown = JSON.parse(await file.text())
+    // A stray JSON file shouldn't wipe the ledger. Require the one field
+    // every export has ever had.
+    if (!parsed || typeof parsed !== 'object' || !('profile' in parsed)) {
+      throw new Error('Not a Benefit Tracker export')
+    }
+    setState(merge(parsed as Partial<AppState>))
   }, [])
 
   const resetAll = useCallback(() => {
@@ -201,6 +217,7 @@ export function useStore() {
 
   return {
     state,
+    savedAt,
     setProfile,
     setScenarios,
     setBucket,
@@ -208,6 +225,7 @@ export function useStore() {
     removeBucket,
     addEvent,
     updateEvent,
+    restoreEvent,
     removeEvent,
     exportJSON,
     importJSON,

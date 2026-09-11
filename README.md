@@ -95,6 +95,10 @@ January on last year's figures rather than refusing to open.
 
 The active tab lives in the URL hash (`#plan/bonus`), Plan scenarios persist
 with the rest of the state, and every chart has a "show as table" toggle.
+Number fields go through `src/components/NumberInput.tsx`, which keeps the raw
+text locally so a typed `0` or `0.5` survives a controlled re-render. A known
+payday in Settings anchors weekly/biweekly checks and per-paycheck accruals on
+the real dates. Theme follows the OS unless pinned from the masthead.
 
 ## On the tax numbers
 

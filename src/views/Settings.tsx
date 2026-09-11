@@ -1,9 +1,10 @@
-import { useRef } from 'react'
+import { useRef, useState } from 'react'
 import type { useStore } from '../store'
 import { PERIODS_PER_YEAR, type PayFrequency } from '../engine/tax'
 import type { AccrualKind } from '../engine/pto'
 import { getTaxYear, PUBLISHED_YEARS } from '../engine/taxData'
 import { money } from '../format'
+import { NumberInput } from '../components/NumberInput'
 
 type Store = ReturnType<typeof useStore>
 
@@ -15,12 +16,9 @@ const ACCRUALS: { value: AccrualKind; label: string }[] = [
   { value: 'none', label: 'No accrual (grants only)' },
 ]
 
-/** Empty string clears the cap rather than coercing to 0, which means something else. */
-const optionalNumber = (v: string): number | null => (v.trim() === '' ? null : Number(v))
-
 /** Caps are stored in hours but asked for in days — the unit everything else uses. */
 const capInDays = (hours: number | null, hoursPerDay: number) =>
-  hours === null ? '' : String(Math.round((hours / hoursPerDay) * 100) / 100)
+  hours === null ? null : Math.round((hours / hoursPerDay) * 100) / 100
 
 /** Every published year, plus this year and next so January isn't a dead end. */
 function selectableYears(current: number): number[] {
@@ -35,6 +33,7 @@ export function Settings({ store }: { store: Store }) {
   const taxYear = getTaxYear(profile.year)
   const stateParams = taxYear.states[profile.state]
   const fileInput = useRef<HTMLInputElement>(null)
+  const [importError, setImportError] = useState<string | null>(null)
 
   return (
     <>
@@ -46,11 +45,11 @@ export function Settings({ store }: { store: Store }) {
         <div className="field-grid">
           <label className="field">
             Annual salary
-            <input
-              type="number"
-              value={profile.annualSalary || ''}
+            <NumberInput
+              prefix="$"
+              value={profile.annualSalary}
               placeholder="e.g. 120000"
-              onChange={(e) => setProfile({ annualSalary: Number(e.target.value) })}
+              onChange={(n) => setProfile({ annualSalary: n ?? 0 })}
             />
           </label>
           <label className="field">
@@ -94,6 +93,19 @@ export function Settings({ store }: { store: Store }) {
               ))}
             </select>
           </label>
+          {(profile.payFrequency === 'weekly' || profile.payFrequency === 'biweekly') && (
+            <label className="field">
+              A recent payday
+              <input
+                type="date"
+                value={profile.firstPayDate ?? ''}
+                onChange={(e) => setProfile({ firstPayDate: e.target.value || undefined })}
+              />
+              <span className="hint">
+                any real pay date · places every check, and per-paycheck accruals, on the right day
+              </span>
+            </label>
+          )}
           <label className="field">
             Tax year
             <select
@@ -122,27 +134,28 @@ export function Settings({ store }: { store: Store }) {
         <div className="field-grid">
           <label className="field">
             401(k) contribution
-            <input
-              type="number"
+            <NumberInput
+              suffix="%"
               step="0.5"
-              value={profile.retirement401kPercent * 100 || ''}
-              placeholder="6"
-              onChange={(e) =>
-                setProfile({ retirement401kPercent: Number(e.target.value) / 100 })
-              }
+              min="0"
+              max="100"
+              value={profile.retirement401kPercent * 100}
+              placeholder="0"
+              onChange={(n) => setProfile({ retirement401kPercent: (n ?? 0) / 100 })}
             />
             <span className="hint">
-              % of gross · {money(profile.annualSalary * profile.retirement401kPercent)} /yr ·{' '}
+              of gross · {money(profile.annualSalary * profile.retirement401kPercent)} /yr ·{' '}
               {profile.year} limit {money(taxYear.limits.elective401k)}
             </span>
           </label>
           <label className="field">
             HSA (annual)
-            <input
-              type="number"
-              value={profile.hsaAnnual || ''}
+            <NumberInput
+              prefix="$"
+              min="0"
+              value={profile.hsaAnnual}
               placeholder="0"
-              onChange={(e) => setProfile({ hsaAnnual: Number(e.target.value) })}
+              onChange={(n) => setProfile({ hsaAnnual: n ?? 0 })}
             />
             <span className="hint">
               limit {money(taxYear.limits.hsaSelfOnly)} self / {money(taxYear.limits.hsaFamily)}{' '}
@@ -151,49 +164,50 @@ export function Settings({ store }: { store: Store }) {
           </label>
           <label className="field">
             Health FSA (annual)
-            <input
-              type="number"
-              value={profile.fsaAnnual || ''}
+            <NumberInput
+              prefix="$"
+              min="0"
+              value={profile.fsaAnnual}
               placeholder="0"
-              onChange={(e) => setProfile({ fsaAnnual: Number(e.target.value) })}
+              onChange={(n) => setProfile({ fsaAnnual: n ?? 0 })}
             />
             <span className="hint">limit {money(taxYear.limits.fsaHealth)}</span>
           </label>
           <label className="field">
             Health premiums (annual)
-            <input
-              type="number"
-              value={profile.premiumsAnnual || ''}
+            <NumberInput
+              prefix="$"
+              min="0"
+              value={profile.premiumsAnnual}
               placeholder="0"
-              onChange={(e) => setProfile({ premiumsAnnual: Number(e.target.value) })}
+              onChange={(n) => setProfile({ premiumsAnnual: n ?? 0 })}
             />
             <span className="hint">your share, medical + dental + vision</span>
           </label>
           <label className="field">
             Employer match rate
-            <input
-              type="number"
+            <NumberInput
+              suffix="%"
               step="10"
-              value={profile.employerMatchPercent * 100 || ''}
-              placeholder="50"
-              onChange={(e) =>
-                setProfile({ employerMatchPercent: Number(e.target.value) / 100 })
-              }
+              min="0"
+              value={profile.employerMatchPercent * 100}
+              placeholder="0"
+              onChange={(n) => setProfile({ employerMatchPercent: (n ?? 0) / 100 })}
             />
-            <span className="hint">% of your contribution, e.g. 50 for $0.50 on the dollar</span>
+            <span className="hint">of your contribution, e.g. 50 for $0.50 on the dollar</span>
           </label>
           <label className="field">
             Match applies up to
-            <input
-              type="number"
+            <NumberInput
+              suffix="%"
               step="0.5"
-              value={profile.employerMatchLimitPercent * 100 || ''}
-              placeholder="6"
-              onChange={(e) =>
-                setProfile({ employerMatchLimitPercent: Number(e.target.value) / 100 })
-              }
+              min="0"
+              max="100"
+              value={profile.employerMatchLimitPercent * 100}
+              placeholder="0"
+              onChange={(n) => setProfile({ employerMatchLimitPercent: (n ?? 0) / 100 })}
             />
-            <span className="hint">% of your salary</span>
+            <span className="hint">of your salary</span>
           </label>
         </div>
       </div>
@@ -238,12 +252,13 @@ export function Settings({ store }: { store: Store }) {
             </label>
             <label className="field">
               Days per year
-              <input
-                type="number"
+              <NumberInput
+                suffix="days"
                 step="0.5"
-                value={b.annualDays || ''}
+                min="0"
+                value={b.annualDays}
                 placeholder="0"
-                onChange={(e) => setBucket(b.id, { annualDays: Number(e.target.value) })}
+                onChange={(n) => setBucket(b.id, { annualDays: n ?? 0 })}
               />
             </label>
             <label className="field">
@@ -264,11 +279,14 @@ export function Settings({ store }: { store: Store }) {
             </label>
             <label className="field">
               Hours per day
-              <input
-                type="number"
+              <NumberInput
+                suffix="h"
                 step="0.5"
+                min="1"
+                max="24"
+                placeholder="8"
                 value={b.hoursPerDay}
-                onChange={(e) => setBucket(b.id, { hoursPerDay: Number(e.target.value) || 8 })}
+                onChange={(n) => setBucket(b.id, { hoursPerDay: n && n > 0 ? n : 8 })}
               />
             </label>
             <label className="field">
@@ -282,29 +300,31 @@ export function Settings({ store }: { store: Store }) {
             </label>
             <label className="field">
               Balance ceiling (days)
-              <input
-                type="number"
+              <NumberInput
+                nullable
+                suffix="days"
                 step="0.5"
+                min="0"
                 value={capInDays(b.maxBalanceHours, b.hoursPerDay)}
                 placeholder="none"
-                onChange={(e) => {
-                  const d = optionalNumber(e.target.value)
+                onChange={(d) =>
                   setBucket(b.id, { maxBalanceHours: d === null ? null : d * b.hoursPerDay })
-                }}
+                }
               />
               <span className="hint">accrual pauses here; blank = no ceiling</span>
             </label>
             <label className="field">
               Carryover cap (days)
-              <input
-                type="number"
+              <NumberInput
+                nullable
+                suffix="days"
                 step="0.5"
+                min="0"
                 value={capInDays(b.carryoverCapHours, b.hoursPerDay)}
                 placeholder="none"
-                onChange={(e) => {
-                  const d = optionalNumber(e.target.value)
+                onChange={(d) =>
                   setBucket(b.id, { carryoverCapHours: d === null ? null : d * b.hoursPerDay })
-                }}
+                }
               />
               <span className="hint">max surviving Dec 31; blank = unlimited</span>
             </label>
@@ -338,8 +358,12 @@ export function Settings({ store }: { store: Store }) {
             style={{ display: 'none' }}
             onChange={(e) => {
               const f = e.target.files?.[0]
-              if (f) void importJSON(f)
               e.target.value = ''
+              if (!f) return
+              setImportError(null)
+              importJSON(f).catch(() =>
+                setImportError(`${f.name} isn't a Benefit Tracker export. Nothing was changed.`),
+              )
             }}
           />
           <button
@@ -356,6 +380,11 @@ export function Settings({ store }: { store: Store }) {
             Clear all data
           </button>
         </div>
+        {importError && (
+          <p className="field-error" style={{ marginTop: 10 }}>
+            {importError}
+          </p>
+        )}
       </div>
 
       <div className="card">

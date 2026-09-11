@@ -6,7 +6,16 @@ import { Plan } from './views/Plan'
 import { Settings } from './views/Settings'
 import { QuickStart } from './views/QuickStart'
 import { getTaxYear } from './engine/taxData'
+import { useTheme, type Theme } from './theme'
 import './theme.css'
+
+const THEMES: { id: Theme; label: string }[] = [
+  { id: 'system', label: 'Auto' },
+  { id: 'light', label: 'Light' },
+  { id: 'dark', label: 'Dark' },
+]
+
+const clock = (d: Date) => d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
 
 export type Tab = 'paycheck' | 'plan' | 'timeoff' | 'settings'
 
@@ -47,6 +56,7 @@ export default function App() {
   const { profile } = store.state
   const needsSalary = profile.annualSalary <= 0
   const taxYear = getTaxYear(profile.year)
+  const [theme, setTheme] = useTheme()
 
   return (
     <div className="app">
@@ -57,6 +67,16 @@ export default function App() {
             {profile.year}
             {taxYear.carriedFrom ? ` (using ${taxYear.carriedFrom} figures)` : ''} · {profile.state}{' '}
             · local to this machine
+          </div>
+        </div>
+        <div className="masthead-tools">
+          {store.savedAt && <span title="Every change is written to this browser's storage as you make it">Saved {clock(store.savedAt)}</span>}
+          <div className="seg" role="group" aria-label="Theme">
+            {THEMES.map((t) => (
+              <button key={t.id} aria-pressed={theme === t.id} onClick={() => setTheme(t.id)}>
+                {t.label}
+              </button>
+            ))}
           </div>
         </div>
       </header>

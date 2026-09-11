@@ -11,6 +11,7 @@ import { contributionHeadroom, deferralPacing } from '../engine/contributions'
 import { getTaxYear } from '../engine/taxData'
 import { money, percent } from '../format'
 import { AllocationBar, type Segment } from '../charts'
+import { NumberInput } from '../components/NumberInput'
 
 type Store = ReturnType<typeof useStore>
 type Section = 'raise' | 'bonus' | 'contributions'
@@ -130,7 +131,7 @@ function RaiseSection({ store }: { store: Store }) {
             <div className="field-grid" style={{ gridTemplateColumns: '1fr' }}>
               <label className="field">
                 Annual salary
-                <input type="number" value={profile.annualSalary} disabled />
+                <input value={money(profile.annualSalary)} disabled />
               </label>
               <label className="field">
                 State
@@ -148,11 +149,12 @@ function RaiseSection({ store }: { store: Store }) {
             <div className="field-grid" style={{ gridTemplateColumns: '1fr' }}>
               <label className="field">
                 Annual salary
-                <input
-                  type="number"
+                <NumberInput
+                  prefix="$"
                   step="1000"
+                  min="0"
                   value={variant.annualSalary}
-                  onChange={(e) => setVariant({ ...variant, annualSalary: Number(e.target.value) })}
+                  onChange={(n) => setVariant({ ...variant, annualSalary: n ?? 0 })}
                 />
               </label>
               <label className="field">
@@ -170,21 +172,40 @@ function RaiseSection({ store }: { store: Store }) {
               </label>
               <label className="field">
                 401(k) rate
-                <input
-                  type="number"
+                <NumberInput
+                  suffix="%"
                   step="0.5"
-                  value={Math.round(variant.retirement401kPercent * 1000) / 10}
-                  onChange={(e) =>
-                    setVariant({ ...variant, retirement401kPercent: Number(e.target.value) / 100 })
-                  }
+                  min="0"
+                  max="100"
+                  value={variant.retirement401kPercent * 100}
+                  onChange={(n) => setVariant({ ...variant, retirement401kPercent: (n ?? 0) / 100 })}
                 />
-                <span className="hint">% of gross</span>
+                <span className="hint">of gross</span>
               </label>
             </div>
           </div>
         </div>
 
         <div className="verdict">
+          {(scenarios.raise || variant.annualSalary !== profile.annualSalary) && (
+            <div className="row" style={{ float: 'right', marginLeft: 12 }}>
+              <button
+                type="button"
+                className="action small"
+                title="Copy the scenario's salary, state and 401(k) rate into your saved profile"
+                onClick={() => {
+                  store.setProfile({
+                    annualSalary: variant.annualSalary,
+                    state: variant.state,
+                    retirement401kPercent: variant.retirement401kPercent,
+                  })
+                  store.setScenarios({ raise: null })
+                }}
+              >
+                Got the raise? Make this my profile
+              </button>
+            </div>
+          )}
           {d.grossDelta !== 0 ? (
             <>
               <div className="big">
@@ -322,26 +343,27 @@ function BonusSection({ store }: { store: Store }) {
         <div className="field-grid">
           <label className="field">
             Bonus amount
-            <input
-              type="number"
+            <NumberInput
+              prefix="$"
               step="1000"
-              value={gross || ''}
+              min="0"
+              value={gross}
               placeholder="10000"
-              onChange={(e) => setGross(Number(e.target.value))}
+              onChange={(n) => setGross(n ?? 0)}
             />
           </label>
           <label className="field">
             Defer to 401(k)
-            <input
-              type="number"
+            <NumberInput
+              suffix="%"
               step="5"
               min="0"
               max="100"
-              value={deferPct || ''}
+              value={deferPct}
               placeholder="0"
-              onChange={(e) => setDeferPct(Number(e.target.value))}
+              onChange={(n) => setDeferPct(n ?? 0)}
             />
-            <span className="hint">% of the bonus, if your plan allows it</span>
+            <span className="hint">of the bonus, if your plan allows it</span>
           </label>
         </div>
 
@@ -496,7 +518,17 @@ function ContributionsSection({ store }: { store: Store }) {
         <div className="verdict">
           {pacing.status === 'front-loaded' ? (
             <>
-              <div className="big">Set it to {idealPct}%</div>
+              <div className="big">
+                Set it to {idealPct}%{' '}
+                <button
+                  type="button"
+                  className="action small"
+                  style={{ verticalAlign: 'middle', marginLeft: 8 }}
+                  onClick={() => store.setProfile({ retirement401kPercent: pacing.idealPercent })}
+                >
+                  Use this rate
+                </button>
+              </div>
               <p className="qualifier">
                 At {percent(profile.retirement401kPercent)} you hit the limit at paycheck{' '}
                 {pacing.limitPeriod}, and every paycheck after that defers nothing — so it earns no
@@ -524,7 +556,19 @@ function ContributionsSection({ store }: { store: Store }) {
             </>
           ) : (
             <>
-              <div className="big">{idealPct}% would max it</div>
+              <div className="big">
+                {idealPct}% would max it
+                {idealPct < 100 && (
+                  <button
+                    type="button"
+                    className="action small"
+                    style={{ verticalAlign: 'middle', marginLeft: 8 }}
+                    onClick={() => store.setProfile({ retirement401kPercent: pacing.idealPercent })}
+                  >
+                    Use this rate
+                  </button>
+                )}
+              </div>
               <p className="qualifier">
                 {pacing.status === 'none'
                   ? `You're not contributing. `

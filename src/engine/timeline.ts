@@ -53,7 +53,7 @@ export function payTimeline(
   const state = taxYear.states[profile.state]
   if (!state) throw new Error(`No tax data for state ${profile.state}`)
 
-  const dates = payDates(profile, anchorISO)
+  const dates = payDates(profile, anchorISO ?? profile.firstPayDate)
   const periods = dates.length
   if (periods === 0 || profile.annualSalary <= 0) return []
 

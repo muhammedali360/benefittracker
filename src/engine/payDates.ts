@@ -5,7 +5,7 @@
  */
 
 import { PERIODS_PER_YEAR, type PayFrequency } from './payFrequency'
-import { toISO } from './pto'
+import { toISO } from './dates'
 
 export function payDates(
   profile: { year: number; payFrequency: PayFrequency },

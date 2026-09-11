@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { useStore } from '../store'
 import {
   buildLedger,
@@ -15,6 +15,8 @@ import { holidaySet } from '../engine/holidays'
 import { bestBridgePerHoliday, type BridgePlan } from '../engine/bridge'
 import { money, hoursLabel, daysLabel, prettyDate, todayISO } from '../format'
 import { BalanceLines, YearCalendar, type BalanceSeries, type CalendarMark } from '../charts'
+import { NumberInput } from '../components/NumberInput'
+import { isValidISO } from '../engine/dates'
 
 type Store = ReturnType<typeof useStore>
 
@@ -34,22 +36,33 @@ interface FormState {
   type: PtoEventType
   start: string
   end: string
-  hours: string
+  hours: number | null
   note: string
 }
 
 export function TimeOff({ store }: { store: Store }) {
-  const { state, addEvent, updateEvent, removeEvent } = store
-  const { profile, buckets, events } = state
+  const { state, addEvent, updateEvent, removeEvent, restoreEvent } = store
+  const { profile, events } = state
   const today = todayISO()
   const year = profile.year
+
+  // Per-paycheck accrual needs the pay cadence, which lives on the profile.
+  const buckets = useMemo(
+    () =>
+      state.buckets.map((b) => ({
+        ...b,
+        payFrequency: profile.payFrequency,
+        payAnchor: profile.firstPayDate,
+      })),
+    [state.buckets, profile.payFrequency, profile.firstPayDate],
+  )
 
   const blankForm = (): FormState => ({
     bucketId: buckets[0]?.id ?? '',
     type: 'usage',
     start: today,
     end: today,
-    hours: '',
+    hours: null,
     note: '',
   })
   const [form, setForm] = useState<FormState>(blankForm)
@@ -138,10 +151,15 @@ export function TimeOff({ store }: { store: Store }) {
       : null
   const derivedHours = span ? span.workdays * formBucket.hoursPerDay : 0
 
+  const datesOk =
+    isValidISO(form.start) && (form.type !== 'usage' || (isValidISO(form.end) && form.end >= form.start))
+  const effectiveHours = form.hours ?? derivedHours
+  const canSubmit = datesOk && effectiveHours !== 0 && Boolean(form.bucketId)
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
-    const raw = form.hours.trim() !== '' ? Number(form.hours) : derivedHours
-    if (!raw) return
+    if (!canSubmit) return
+    const raw = effectiveHours
     const signed =
       form.type === 'usage' ? -Math.abs(raw) : form.type === 'adjustment' ? raw : Math.abs(raw)
     const payload: Omit<PtoEvent, 'id'> = {
@@ -166,7 +184,7 @@ export function TimeOff({ store }: { store: Store }) {
       start: e.date,
       end: e.endDate ?? e.date,
       // Usage and grants are entered unsigned; adjustments keep their sign.
-      hours: String(e.type === 'adjustment' ? e.hours : Math.abs(e.hours)),
+      hours: e.type === 'adjustment' ? e.hours : Math.abs(e.hours),
       note: e.note ?? '',
     })
     formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -177,12 +195,31 @@ export function TimeOff({ store }: { store: Store }) {
     setForm(blankForm())
   }
 
-  const confirmRemove = (e: PtoEvent & { bucket: { label: string } }) => {
-    const what = `${TYPE_LABEL[e.type].toLowerCase()} of ${hoursLabel(Math.abs(e.hours))} ${e.bucket.label} on ${prettyDate(e.date)}`
-    if (window.confirm(`Delete the ${what}? This can't be undone.`)) {
-      if (editingId === e.id) cancelEdit()
-      removeEvent(e.id)
+  // Delete is instant with an undo, rather than a confirm dialog nobody reads.
+  const [undo, setUndo] = useState<{ event: PtoEvent; label: string } | null>(null)
+  useEffect(() => {
+    if (!undo) return
+    const t = window.setTimeout(() => setUndo(null), 7000)
+    return () => window.clearTimeout(t)
+  }, [undo])
+
+  const remove = (e: PtoEvent & { bucket: { label: string } }) => {
+    if (editingId === e.id) cancelEdit()
+    // Only the stored fields come back on undo; ledger-derived ones do not.
+    const event: PtoEvent = {
+      id: e.id,
+      bucketId: e.bucketId,
+      type: e.type,
+      date: e.date,
+      hours: e.hours,
+      ...(e.endDate ? { endDate: e.endDate } : {}),
+      ...(e.note ? { note: e.note } : {}),
     }
+    removeEvent(e.id)
+    setUndo({
+      event,
+      label: `${TYPE_LABEL[e.type]} · ${hoursLabel(Math.abs(e.hours))} ${e.bucket.label} · ${prettyDate(e.date)}`,
+    })
   }
 
   // --- planning ------------------------------------------------------------
@@ -199,6 +236,10 @@ export function TimeOff({ store }: { store: Store }) {
     () => bestBridgePerHoliday(year, { maxPtoDays: 5, fromISO: today }).slice(0, 6),
     [year, today],
   )
+
+  /** A plan is booked once a usage event starts on its first booking day. */
+  const isBooked = (plan: BridgePlan) =>
+    events.some((e) => e.type === 'usage' && e.date === plan.bookDates[0])
 
   /** Days banked by a date, across every bucket — what a plan has to fit inside. */
   const daysBankedBy = (iso: string) =>
@@ -252,8 +293,7 @@ export function TimeOff({ store }: { store: Store }) {
 
   const formValue = (() => {
     const d = derived.find((x) => x.bucket.id === form.bucketId)
-    const h = Number(form.hours) || derivedHours
-    return d && d.rate > 0 && h ? h * d.rate : 0
+    return d && d.rate > 0 && effectiveHours ? Math.abs(effectiveHours) * d.rate : 0
   })()
 
   return (
@@ -317,7 +357,12 @@ export function TimeOff({ store }: { store: Store }) {
             ? 'Change anything below and save. The balance is replayed from scratch.'
             : 'Book time off, record a floating holiday, or correct a balance. Everything is an event — nothing is overwritten.'}
         </p>
-        <form onSubmit={submit}>
+        <form
+          onSubmit={submit}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && editingId) cancelEdit()
+          }}
+        >
           <div className="field-grid">
             <label className="field">
               Bucket
@@ -379,12 +424,13 @@ export function TimeOff({ store }: { store: Store }) {
             )}
             <label className="field">
               Hours
-              <input
-                type="number"
+              <NumberInput
+                nullable
+                suffix="h"
                 step="0.5"
                 value={form.hours}
                 placeholder={derivedHours ? String(derivedHours) : String(formBucket?.hoursPerDay ?? 8)}
-                onChange={(e) => setForm({ ...form, hours: e.target.value })}
+                onChange={(n) => setForm({ ...form, hours: n })}
               />
               <span className="hint">
                 {form.type === 'adjustment'
@@ -411,7 +457,7 @@ export function TimeOff({ store }: { store: Store }) {
             </p>
           )}
           <div className="row" style={{ marginTop: 14 }}>
-            <button className="action primary" type="submit">
+            <button className="action primary" type="submit" disabled={!canSubmit}>
               {editingId ? 'Save changes' : 'Add to ledger'}
             </button>
             {editingId && (
@@ -442,17 +488,22 @@ export function TimeOff({ store }: { store: Store }) {
         <div className="row">
           <label className="field" style={{ maxWidth: 160 }}>
             Days wanted
-            <input
-              type="number"
+            <NumberInput
+              suffix="days"
               min="1"
               step="1"
-              value={wanted || ''}
-              onChange={(e) => setWanted(Math.max(0, Number(e.target.value)))}
+              value={wanted}
+              onChange={(n) => setWanted(Math.max(0, n ?? 0))}
             />
           </label>
         </div>
         <div className="verdict">
-          {!affordable ? (
+          {wanted < 1 ? (
+            <>
+              <div className="big">How many days?</div>
+              <p className="qualifier">Enter a number of days above.</p>
+            </>
+          ) : !affordable ? (
             <>
               <div className="big">Not before {year + 1} is out</div>
               <p className="qualifier">
@@ -497,6 +548,7 @@ export function TimeOff({ store }: { store: Store }) {
             {bridges.map((plan) => {
               const banked = daysBankedBy(plan.start)
               const affordableThen = banked >= plan.ptoDays
+              const booked = isBooked(plan)
               return (
                 <div className="plan" key={`${plan.start}-${plan.end}`}>
                   <span className="lede">
@@ -507,12 +559,14 @@ export function TimeOff({ store }: { store: Store }) {
                     {plan.bookDates.map((d) => prettyDate(d).replace(`, ${year}`, '')).join(', ')} ·{' '}
                     {plan.holidays.map((h) => h.name).join(' + ')}
                   </span>
-                  {!affordableThen && (
+                  {booked ? (
+                    <span className="pill booked">Booked</span>
+                  ) : !affordableThen ? (
                     <span className="pill unaffordable">
                       only {Math.round(banked * 10) / 10}d banked by then
                     </span>
-                  )}
-                  {primary && (
+                  ) : null}
+                  {primary && !booked && (
                     <button
                       className="action"
                       onClick={() => bookBridge(plan)}
@@ -650,7 +704,7 @@ export function TimeOff({ store }: { store: Store }) {
                         </button>
                         <button
                           className="action danger-text"
-                          onClick={() => confirmRemove(e)}
+                          onClick={() => remove(e)}
                           aria-label={`Delete ${TYPE_LABEL[e.type]} on ${prettyDate(e.date)}`}
                           title="Delete"
                         >
@@ -665,6 +719,21 @@ export function TimeOff({ store }: { store: Store }) {
           </table>
         </div>
       </div>
+
+      {undo && (
+        <div className="toast" role="status">
+          <span>Deleted {undo.label}</span>
+          <button
+            type="button"
+            onClick={() => {
+              restoreEvent(undo.event)
+              setUndo(null)
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      )}
     </>
   )
 }

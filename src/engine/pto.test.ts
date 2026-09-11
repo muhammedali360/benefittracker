@@ -266,3 +266,59 @@ describe('earliestAffordable', () => {
     expect(earliestAffordable([], [], 5, '2026-01-01', '2026-12-31')).toBeNull()
   })
 })
+
+describe('per-paycheck accrual follows the pay cadence', () => {
+  const base: BucketConfig = {
+    id: 'pp',
+    label: 'PTO',
+    hoursPerDay: 8,
+    accrualKind: 'per-paycheck',
+    annualDays: 13,
+    accrualStart: '2026-01-01',
+    maxBalanceHours: null,
+    carryoverCapHours: null,
+    color: '#000',
+  }
+
+  it('defaults to biweekly', () => {
+    const events = generateAccruals(base, '2026-12-31')
+    expect(events).toHaveLength(26)
+    expect(events[0].hours).toBeCloseTo(4)
+  })
+
+  it('credits 52 smaller accruals for a weekly earner', () => {
+    const events = generateAccruals({ ...base, payFrequency: 'weekly' }, '2026-12-31')
+    expect(events).toHaveLength(52)
+    expect(events[0].hours).toBeCloseTo(2)
+  })
+
+  it('lands semimonthly accruals on the 15th and month end', () => {
+    const events = generateAccruals({ ...base, payFrequency: 'semimonthly' }, '2026-03-31')
+    expect(events.map((e) => e.date)).toEqual([
+      '2026-01-15',
+      '2026-01-31',
+      '2026-02-15',
+      '2026-02-28',
+      '2026-03-15',
+      '2026-03-31',
+    ])
+  })
+
+  it('anchors biweekly accruals on a known payday', () => {
+    const events = generateAccruals(
+      { ...base, payFrequency: 'biweekly', payAnchor: '2026-01-09' },
+      '2026-02-28',
+    )
+    expect(events.map((e) => e.date)).toEqual(['2026-01-09', '2026-01-23', '2026-02-06', '2026-02-20'])
+  })
+
+  it('sums to the annual allotment whatever the cadence', () => {
+    for (const payFrequency of ['weekly', 'biweekly', 'semimonthly', 'monthly'] as const) {
+      const total = generateAccruals({ ...base, payFrequency }, '2026-12-31').reduce(
+        (a, e) => a + e.hours,
+        0,
+      )
+      expect(total).toBeCloseTo(13 * 8)
+    }
+  })
+})
