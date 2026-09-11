@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import type { useStore } from '../store'
 import { PERIODS_PER_YEAR, type PayFrequency } from '../engine/tax'
 import type { AccrualKind } from '../engine/pto'
-import { getTaxYear } from '../engine/taxData'
+import { getTaxYear, PUBLISHED_YEARS } from '../engine/taxData'
 import { money } from '../format'
 
 type Store = ReturnType<typeof useStore>
@@ -18,8 +18,19 @@ const ACCRUALS: { value: AccrualKind; label: string }[] = [
 /** Empty string clears the cap rather than coercing to 0, which means something else. */
 const optionalNumber = (v: string): number | null => (v.trim() === '' ? null : Number(v))
 
+/** Caps are stored in hours but asked for in days — the unit everything else uses. */
+const capInDays = (hours: number | null, hoursPerDay: number) =>
+  hours === null ? '' : String(Math.round((hours / hoursPerDay) * 100) / 100)
+
+/** Every published year, plus this year and next so January isn't a dead end. */
+function selectableYears(current: number): number[] {
+  const now = new Date().getFullYear()
+  return [...new Set([...PUBLISHED_YEARS, now, now + 1, current])].sort((a, b) => a - b)
+}
+
 export function Settings({ store }: { store: Store }) {
-  const { state, setProfile, setBucket, exportJSON, importJSON } = store
+  const { state, setProfile, setBucket, addBucket, removeBucket, exportJSON, importJSON, resetAll } =
+    store
   const { profile, buckets } = state
   const taxYear = getTaxYear(profile.year)
   const stateParams = taxYear.states[profile.state]
@@ -82,6 +93,22 @@ export function Settings({ store }: { store: Store }) {
                 </option>
               ))}
             </select>
+          </label>
+          <label className="field">
+            Tax year
+            <select
+              aria-label="Tax year"
+              value={profile.year}
+              onChange={(e) => setProfile({ year: Number(e.target.value) })}
+            >
+              {selectableYears(profile.year).map((y) => (
+                <option key={y} value={y}>
+                  {y}
+                  {PUBLISHED_YEARS.includes(y) ? '' : ` (carries ${getTaxYear(y).carriedFrom} figures)`}
+                </option>
+              ))}
+            </select>
+            <span className="hint">also the year the Time Off calendar shows</span>
           </label>
         </div>
       </div>
@@ -173,12 +200,42 @@ export function Settings({ store }: { store: Store }) {
 
       {buckets.map((b) => (
         <div className="card" key={b.id}>
-          <h2>{b.label}</h2>
+          <div className="card-head">
+            <h2>
+              <span className="swatch" style={{ background: b.color, marginRight: 8 }} />
+              {b.label}
+            </h2>
+            {buckets.length > 1 && (
+              <button
+                className="action small danger-text"
+                type="button"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Remove ${b.label}? Every event logged against it is deleted too.`,
+                    )
+                  )
+                    removeBucket(b.id)
+                }}
+              >
+                Remove bucket
+              </button>
+            )}
+          </div>
           <p className="caption">
             Balances are replayed from the event ledger, so changing these numbers
             retroactively corrects history.
           </p>
           <div className="field-grid">
+            <label className="field">
+              Name
+              <input
+                type="text"
+                value={b.label}
+                onChange={(e) => setBucket(b.id, { label: e.target.value })}
+              />
+              <span className="hint">PTO, sick leave, comp time…</span>
+            </label>
             <label className="field">
               Days per year
               <input
@@ -211,7 +268,7 @@ export function Settings({ store }: { store: Store }) {
                 type="number"
                 step="0.5"
                 value={b.hoursPerDay}
-                onChange={(e) => setBucket(b.id, { hoursPerDay: Number(e.target.value) })}
+                onChange={(e) => setBucket(b.id, { hoursPerDay: Number(e.target.value) || 8 })}
               />
             </label>
             <label className="field">
@@ -224,32 +281,43 @@ export function Settings({ store }: { store: Store }) {
               <span className="hint">your hire date, or Jan 1</span>
             </label>
             <label className="field">
-              Balance ceiling (hours)
+              Balance ceiling (days)
               <input
                 type="number"
-                value={b.maxBalanceHours ?? ''}
+                step="0.5"
+                value={capInDays(b.maxBalanceHours, b.hoursPerDay)}
                 placeholder="none"
-                onChange={(e) =>
-                  setBucket(b.id, { maxBalanceHours: optionalNumber(e.target.value) })
-                }
+                onChange={(e) => {
+                  const d = optionalNumber(e.target.value)
+                  setBucket(b.id, { maxBalanceHours: d === null ? null : d * b.hoursPerDay })
+                }}
               />
               <span className="hint">accrual pauses here; blank = no ceiling</span>
             </label>
             <label className="field">
-              Carryover cap (hours)
+              Carryover cap (days)
               <input
                 type="number"
-                value={b.carryoverCapHours ?? ''}
+                step="0.5"
+                value={capInDays(b.carryoverCapHours, b.hoursPerDay)}
                 placeholder="none"
-                onChange={(e) =>
-                  setBucket(b.id, { carryoverCapHours: optionalNumber(e.target.value) })
-                }
+                onChange={(e) => {
+                  const d = optionalNumber(e.target.value)
+                  setBucket(b.id, { carryoverCapHours: d === null ? null : d * b.hoursPerDay })
+                }}
               />
               <span className="hint">max surviving Dec 31; blank = unlimited</span>
             </label>
           </div>
         </div>
       ))}
+
+      <div className="row" style={{ marginBottom: 16 }}>
+        <button className="action" type="button" onClick={addBucket}>
+          + Add a bucket
+        </button>
+        <span className="muted-note">Sick leave, comp time, a second PTO tier — each keeps its own ledger.</span>
+      </div>
 
       <div className="card">
         <h2>Your data</h2>
@@ -274,6 +342,19 @@ export function Settings({ store }: { store: Store }) {
               e.target.value = ''
             }}
           />
+          <button
+            className="action danger-text"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Clear everything — salary, elections, buckets and the whole ledger? Export first if you want a copy.',
+                )
+              )
+                resetAll()
+            }}
+          >
+            Clear all data
+          </button>
         </div>
       </div>
 
@@ -286,6 +367,18 @@ export function Settings({ store }: { store: Store }) {
           <br />
           Limits: {taxYear.limits.source}.
         </p>
+        {taxYear.carriedFrom && (
+          <div className="callout warn" style={{ marginTop: 12, marginBottom: 0 }}>
+            <span className="icon" aria-hidden="true">
+              ⚠
+            </span>
+            <span>
+              <strong>Nothing is published for {profile.year} yet.</strong> Federal, state and
+              contribution-limit figures are carried forward from {taxYear.carriedFrom}. They're
+              the right planning numbers until the new ones land; refresh the data block then.
+            </span>
+          </div>
+        )}
         {stateParams.provenanceNote && (
           <div className="callout warn" style={{ marginTop: 12, marginBottom: 0 }}>
             <span className="icon" aria-hidden="true">

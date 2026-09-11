@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { useStore } from '../store'
 import {
   buildLedger,
@@ -8,11 +8,12 @@ import {
   chargeableDays,
   earliestAffordable,
   hourlyRate,
+  type PtoEvent,
   type PtoEventType,
 } from '../engine/pto'
 import { holidaySet } from '../engine/holidays'
 import { bestBridgePerHoliday, type BridgePlan } from '../engine/bridge'
-import { money, hoursLabel, prettyDate, todayISO } from '../format'
+import { money, hoursLabel, daysLabel, prettyDate, todayISO } from '../format'
 import { BalanceLines, YearCalendar, type BalanceSeries, type CalendarMark } from '../charts'
 
 type Store = ReturnType<typeof useStore>
@@ -25,22 +26,36 @@ const TYPE_LABEL: Record<PtoEventType, string> = {
   expiration: 'Expired',
 }
 
-const days = (n: number) => `${Math.round(n * 100) / 100} ${Math.abs(n) === 1 ? 'day' : 'days'}`
+/** How many ledger rows show before "Show all". */
+const LEDGER_PREVIEW = 10
+
+interface FormState {
+  bucketId: string
+  type: PtoEventType
+  start: string
+  end: string
+  hours: string
+  note: string
+}
 
 export function TimeOff({ store }: { store: Store }) {
-  const { state, addEvent, removeEvent } = store
+  const { state, addEvent, updateEvent, removeEvent } = store
   const { profile, buckets, events } = state
   const today = todayISO()
   const year = profile.year
 
-  const [form, setForm] = useState({
+  const blankForm = (): FormState => ({
     bucketId: buckets[0]?.id ?? '',
-    type: 'usage' as PtoEventType,
+    type: 'usage',
     start: today,
     end: today,
     hours: '',
     note: '',
   })
+  const [form, setForm] = useState<FormState>(blankForm)
+  /** Set while an existing entry is loaded into the form; submit updates it. */
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const formRef = useRef<HTMLDivElement>(null)
   const formBucket = buckets.find((b) => b.id === form.bucketId) ?? buckets[0]
 
   /**
@@ -96,6 +111,14 @@ export function TimeOff({ store }: { store: Store }) {
     [buckets, events, year],
   )
 
+  // Generated accruals outnumber real entries many to one, so they fold away
+  // by default; expirations are generated too but matter, so they always show.
+  const [showAccruals, setShowAccruals] = useState(false)
+  const [showAll, setShowAll] = useState(false)
+  const accrualCount = ledger.filter((e) => e.type === 'accrual').length
+  const filtered = showAccruals ? ledger : ledger.filter((e) => e.type !== 'accrual')
+  const visible = showAll ? filtered : filtered.slice(-LEDGER_PREVIEW)
+
   const series: BalanceSeries[] = derived.map((d) => ({
     id: d.bucket.id,
     label: d.bucket.label,
@@ -121,15 +144,45 @@ export function TimeOff({ store }: { store: Store }) {
     if (!raw) return
     const signed =
       form.type === 'usage' ? -Math.abs(raw) : form.type === 'adjustment' ? raw : Math.abs(raw)
-    addEvent({
+    const payload: Omit<PtoEvent, 'id'> = {
       bucketId: form.bucketId,
       type: form.type,
       date: form.start,
       ...(form.type === 'usage' && form.end > form.start ? { endDate: form.end } : {}),
       hours: signed,
       note: form.note.trim() || undefined,
+    }
+    if (editingId) updateEvent(editingId, payload)
+    else addEvent(payload)
+    setEditingId(null)
+    setForm(blankForm())
+  }
+
+  const startEdit = (e: PtoEvent) => {
+    setEditingId(e.id)
+    setForm({
+      bucketId: e.bucketId,
+      type: e.type,
+      start: e.date,
+      end: e.endDate ?? e.date,
+      // Usage and grants are entered unsigned; adjustments keep their sign.
+      hours: String(e.type === 'adjustment' ? e.hours : Math.abs(e.hours)),
+      note: e.note ?? '',
     })
-    setForm({ ...form, start: today, end: today, hours: '', note: '' })
+    formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const cancelEdit = () => {
+    setEditingId(null)
+    setForm(blankForm())
+  }
+
+  const confirmRemove = (e: PtoEvent & { bucket: { label: string } }) => {
+    const what = `${TYPE_LABEL[e.type].toLowerCase()} of ${hoursLabel(Math.abs(e.hours))} ${e.bucket.label} on ${prettyDate(e.date)}`
+    if (window.confirm(`Delete the ${what}? This can't be undone.`)) {
+      if (editingId === e.id) cancelEdit()
+      removeEvent(e.id)
+    }
   }
 
   // --- planning ------------------------------------------------------------
@@ -197,12 +250,18 @@ export function TimeOff({ store }: { store: Store }) {
     .map((d) => `${Math.round(d.balanceDays * 100) / 100} ${d.bucket.label}`)
     .join(' + ')
 
+  const formValue = (() => {
+    const d = derived.find((x) => x.bucket.id === form.bucketId)
+    const h = Number(form.hours) || derivedHours
+    return d && d.rate > 0 && h ? h * d.rate : 0
+  })()
+
   return (
     <>
       <div className="tiles">
         <div className="tile">
           <div className="label">Available today</div>
-          <div className="value">{days(totals.days)}</div>
+          <div className="value">{daysLabel(totals.days)}</div>
           <div className="note">{breakdown || 'nothing banked yet'}</div>
         </div>
         <div className="tile">
@@ -214,7 +273,7 @@ export function TimeOff({ store }: { store: Store }) {
         </div>
         <div className="tile">
           <div className="label">Projected Dec 31</div>
-          <div className="value">{days(totals.yearEndDays)}</div>
+          <div className="value">{daysLabel(totals.yearEndDays)}</div>
           <div className="note">if you take nothing more this year</div>
         </div>
         <div className="tile">
@@ -239,15 +298,131 @@ export function TimeOff({ store }: { store: Store }) {
             <span>
               <strong>
                 You're on track to forfeit{' '}
-                {days(d.forecast.forfeitedHours / d.bucket.hoursPerDay)} of {d.bucket.label}
+                {daysLabel(d.forecast.forfeitedHours / d.bucket.hoursPerDay)} of {d.bucket.label}
                 {d.rate ? ` — ${money(d.forecast.forfeitedHours * d.rate)}` : ''} on Dec 31.
               </strong>{' '}
-              The projected balance of {hoursLabel(d.forecast.balanceAtYearEnd)} is above the{' '}
-              {hoursLabel(d.bucket.carryoverCapHours ?? 0)} carryover cap. Book time before year
-              end or you simply lose it.
+              The projected balance of{' '}
+              {daysLabel(d.forecast.balanceAtYearEnd / d.bucket.hoursPerDay)} is above the{' '}
+              {daysLabel((d.bucket.carryoverCapHours ?? 0) / d.bucket.hoursPerDay)} carryover cap.
+              Book time before year end or you simply lose it.
             </span>
           </div>
         ))}
+
+      {/* Logging is the thing done most often, so it sits above the analysis. */}
+      <div className="card" ref={formRef}>
+        <h2>{editingId ? 'Edit entry' : 'Log time'}</h2>
+        <p className="caption">
+          {editingId
+            ? 'Change anything below and save. The balance is replayed from scratch.'
+            : 'Book time off, record a floating holiday, or correct a balance. Everything is an event — nothing is overwritten.'}
+        </p>
+        <form onSubmit={submit}>
+          <div className="field-grid">
+            <label className="field">
+              Bucket
+              {/* Explicit aria-label: a nested <select> otherwise absorbs its
+                  own option text into its accessible name. */}
+              <select
+                aria-label="Bucket"
+                value={form.bucketId}
+                onChange={(e) => setForm({ ...form, bucketId: e.target.value })}
+              >
+                {buckets.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Type
+              <select
+                aria-label="Type"
+                value={form.type}
+                onChange={(e) => setForm({ ...form, type: e.target.value as PtoEventType })}
+              >
+                <option value="usage">Time off taken</option>
+                <option value="grant">Grant (floater, comp day)</option>
+                <option value="adjustment">Manual adjustment</option>
+              </select>
+            </label>
+            <label className="field">
+              {form.type === 'usage' ? 'First day' : 'Date'}
+              <input
+                type="date"
+                value={form.start}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    start: e.target.value,
+                    end: e.target.value > form.end ? e.target.value : form.end,
+                  })
+                }
+              />
+            </label>
+            {form.type === 'usage' && (
+              <label className="field">
+                Last day
+                <input
+                  type="date"
+                  min={form.start}
+                  value={form.end}
+                  onChange={(e) => setForm({ ...form, end: e.target.value })}
+                />
+                <span className="hint">
+                  {span
+                    ? `${span.workdays} workdays = ${hoursLabel(derivedHours)}`
+                    : 'weekends are not counted'}
+                </span>
+              </label>
+            )}
+            <label className="field">
+              Hours
+              <input
+                type="number"
+                step="0.5"
+                value={form.hours}
+                placeholder={derivedHours ? String(derivedHours) : String(formBucket?.hoursPerDay ?? 8)}
+                onChange={(e) => setForm({ ...form, hours: e.target.value })}
+              />
+              <span className="hint">
+                {form.type === 'adjustment'
+                  ? 'negative to remove hours'
+                  : 'blank uses the value above'}
+              </span>
+            </label>
+            <label className="field">
+              Note
+              <input
+                type="text"
+                value={form.note}
+                placeholder={form.type === 'grant' ? 'Floating holiday awarded' : 'Trip to Tahoe'}
+                onChange={(e) => setForm({ ...form, note: e.target.value })}
+              />
+            </label>
+          </div>
+          {span && span.holidays.length > 0 && (
+            <p className="muted-note" style={{ marginTop: 12 }}>
+              {span.holidays.map((h) => h.name).join(' and ')}{' '}
+              {span.holidays.length === 1 ? 'falls' : 'fall'} inside this span, so{' '}
+              {span.holidays.length === 1 ? 'it is' : 'they are'} not charged —{' '}
+              {span.workdays} days instead of {span.workdays + span.holidays.length}.
+            </p>
+          )}
+          <div className="row" style={{ marginTop: 14 }}>
+            <button className="action primary" type="submit">
+              {editingId ? 'Save changes' : 'Add to ledger'}
+            </button>
+            {editingId && (
+              <button className="action" type="button" onClick={cancelEdit}>
+                Cancel
+              </button>
+            )}
+            {formValue > 0 && <span className="muted-note">worth {money(formValue)}</span>}
+          </div>
+        </form>
+      </div>
 
       <div className="card">
         <h2>Balance through {year}</h2>
@@ -292,7 +467,7 @@ export function TimeOff({ store }: { store: Store }) {
             <>
               <div className="big delta up">Today</div>
               <p className="qualifier">
-                You have {days(totals.days)} banked, so a {wanted}-day break is already covered
+                You have {daysLabel(totals.days)} banked, so a {wanted}-day break is already covered
                 {totals.value > 0 && (
                   <> — worth {money(wanted * (derived[0]?.rate ?? 0) * (primary?.hoursPerDay ?? 8))} of salary</>
                 )}
@@ -303,8 +478,8 @@ export function TimeOff({ store }: { store: Store }) {
             <>
               <div className="big">{prettyDate(affordable.date)}</div>
               <p className="qualifier">
-                You're {days(affordable.shortfallToday)} short today. By {prettyDate(affordable.date)}{' '}
-                you'll have {days(affordable.daysAvailable)} banked, which covers it.
+                You're {daysLabel(affordable.shortfallToday)} short today. By {prettyDate(affordable.date)}{' '}
+                you'll have {daysLabel(affordable.daysAvailable)} banked, which covers it.
               </p>
             </>
           )}
@@ -383,191 +558,112 @@ export function TimeOff({ store }: { store: Store }) {
       </div>
 
       <div className="card">
-        <h2>Log time</h2>
-        <p className="caption">
-          Book time off, record a floating holiday, or correct a balance. Everything is an event
-          — nothing is overwritten.
-        </p>
-        <form onSubmit={submit}>
-          <div className="field-grid">
-            <label className="field">
-              Bucket
-              {/* Explicit aria-label: a nested <select> otherwise absorbs its
-                  own option text into its accessible name. */}
-              <select
-                aria-label="Bucket"
-                value={form.bucketId}
-                onChange={(e) => setForm({ ...form, bucketId: e.target.value })}
-              >
-                {buckets.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              Type
-              <select
-                aria-label="Type"
-                value={form.type}
-                onChange={(e) => setForm({ ...form, type: e.target.value as PtoEventType })}
-              >
-                <option value="usage">Time off taken</option>
-                <option value="grant">Grant (floater, comp day)</option>
-                <option value="adjustment">Manual adjustment</option>
-              </select>
-            </label>
-            <label className="field">
-              {form.type === 'usage' ? 'First day' : 'Date'}
-              <input
-                type="date"
-                value={form.start}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    start: e.target.value,
-                    end: e.target.value > form.end ? e.target.value : form.end,
-                  })
-                }
-              />
-            </label>
-            {form.type === 'usage' && (
-              <label className="field">
-                Last day
-                <input
-                  type="date"
-                  min={form.start}
-                  value={form.end}
-                  onChange={(e) => setForm({ ...form, end: e.target.value })}
-                />
-                <span className="hint">
-                  {span
-                    ? `${span.workdays} workdays = ${hoursLabel(derivedHours)}`
-                    : 'weekends are not counted'}
-                </span>
-              </label>
-            )}
-            <label className="field">
-              Hours
-              <input
-                type="number"
-                step="0.5"
-                value={form.hours}
-                placeholder={derivedHours ? String(derivedHours) : String(formBucket.hoursPerDay)}
-                onChange={(e) => setForm({ ...form, hours: e.target.value })}
-              />
-              <span className="hint">
-                {form.type === 'adjustment'
-                  ? 'negative to remove hours'
-                  : 'blank uses the value above'}
-              </span>
-            </label>
-            <label className="field">
-              Note
-              <input
-                type="text"
-                value={form.note}
-                placeholder={form.type === 'grant' ? 'Floating holiday' : 'Trip to Tahoe'}
-                onChange={(e) => setForm({ ...form, note: e.target.value })}
-              />
-            </label>
-          </div>
-          {span && span.holidays.length > 0 && (
-            <p className="muted-note" style={{ marginTop: 12 }}>
-              {span.holidays.map((h) => h.name).join(' and ')}{' '}
-              {span.holidays.length === 1 ? 'falls' : 'fall'} inside this span, so{' '}
-              {span.holidays.length === 1 ? 'it is' : 'they are'} not charged —{' '}
-              {span.workdays} days instead of {span.workdays + span.holidays.length}.
-            </p>
-          )}
-          <div className="row" style={{ marginTop: 14 }}>
-            <button className="action primary" type="submit">
-              Add to ledger
-            </button>
-            {(() => {
-              const d = derived.find((x) => x.bucket.id === form.bucketId)
-              const h = Number(form.hours) || derivedHours
-              return d && d.rate > 0 && h ? (
-                <span className="muted-note">worth {money(h * d.rate)}</span>
-              ) : null
-            })()}
-          </div>
-        </form>
-      </div>
-
-      <div className="card">
         <h2>Ledger</h2>
         <p className="caption">
           Every event across all buckets in {year}, oldest first. Accruals are generated from your
           schedule and recalculated on the fly.
         </p>
-        <table className="data">
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Bucket</th>
-              <th>Type</th>
-              <th>Detail</th>
-              <th className="num">Hours</th>
-              <th className="num">Bucket balance</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {ledger.length === 0 && (
+        <div className="ledger-tools">
+          {accrualCount > 0 && (
+            <button
+              type="button"
+              className="action small"
+              aria-pressed={showAccruals}
+              onClick={() => setShowAccruals((v) => !v)}
+            >
+              {showAccruals ? 'Hide' : 'Show'} {accrualCount} accrual{accrualCount === 1 ? '' : 's'}
+            </button>
+          )}
+          {filtered.length > LEDGER_PREVIEW && (
+            <button type="button" className="action small" onClick={() => setShowAll((v) => !v)}>
+              {showAll ? `Show latest ${LEDGER_PREVIEW}` : `Show all ${filtered.length}`}
+            </button>
+          )}
+          {!showAll && filtered.length > LEDGER_PREVIEW && (
+            <span>latest {LEDGER_PREVIEW} of {filtered.length}</span>
+          )}
+        </div>
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
               <tr>
-                <td colSpan={7} style={{ textAlign: 'center', padding: 24 }}>
-                  No events yet.
-                </td>
+                <th>Date</th>
+                <th>Bucket</th>
+                <th>Type</th>
+                <th>Detail</th>
+                <th className="num">Hours</th>
+                <th className="num">Bucket balance</th>
+                <th />
               </tr>
-            )}
-            {ledger.map((e) => (
-              <tr key={`${e.bucket.id}-${e.id}`}>
-                <td>
-                  {prettyDate(e.date)}
-                  {e.endDate && e.endDate !== e.date && (
-                    <span className="muted-note"> – {prettyDate(e.endDate)}</span>
-                  )}
-                </td>
-                <td>
-                  <span className="item" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
-                    <span className="swatch" style={{ background: e.bucket.color }} />
-                    {e.bucket.label}
-                  </span>
-                </td>
-                <td className="name">{TYPE_LABEL[e.type]}</td>
-                <td>
-                  {e.note ?? '—'}
-                  {e.cappedHours ? (
-                    <span className="pill" style={{ marginLeft: 8 }}>
-                      {hoursLabel(e.cappedHours)} lost to ceiling
+            </thead>
+            <tbody>
+              {visible.length === 0 && (
+                <tr>
+                  <td colSpan={7} style={{ textAlign: 'center', padding: 24 }}>
+                    {ledger.length === 0
+                      ? 'No events yet. Log time above to start the ledger.'
+                      : 'Only accruals so far — show them above, or log time.'}
+                  </td>
+                </tr>
+              )}
+              {visible.map((e) => (
+                <tr key={`${e.bucket.id}-${e.id}`} className={editingId === e.id ? 'editing' : undefined}>
+                  <td>
+                    {prettyDate(e.date)}
+                    {e.endDate && e.endDate !== e.date && (
+                      <span className="muted-note"> – {prettyDate(e.endDate)}</span>
+                    )}
+                  </td>
+                  <td>
+                    <span className="item" style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <span className="swatch" style={{ background: e.bucket.color }} />
+                      {e.bucket.label}
                     </span>
-                  ) : null}
-                </td>
-                <td
-                  className="num"
-                  style={{ color: e.hours >= 0 ? 'var(--success-text)' : 'var(--text-primary)' }}
-                >
-                  {e.hours >= 0 ? '+' : ''}
-                  {Math.round(e.hours * 10) / 10}
-                </td>
-                <td className="num">{Math.round(e.balance * 10) / 10}</td>
-                <td className="num">
-                  {!e.generated && (
-                    <button
-                      className="action danger-text"
-                      onClick={() => removeEvent(e.id)}
-                      aria-label={`Delete ${TYPE_LABEL[e.type]} on ${prettyDate(e.date)}`}
-                    >
-                      ✕
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                  </td>
+                  <td className="name">{TYPE_LABEL[e.type]}</td>
+                  <td className="wrap">
+                    {e.note ?? '—'}
+                    {e.cappedHours ? (
+                      <span className="pill" style={{ marginLeft: 8 }}>
+                        {hoursLabel(e.cappedHours)} lost to ceiling
+                      </span>
+                    ) : null}
+                  </td>
+                  <td
+                    className="num"
+                    style={{ color: e.hours >= 0 ? 'var(--success-text)' : 'var(--text-primary)' }}
+                  >
+                    {e.hours >= 0 ? '+' : ''}
+                    {Math.round(e.hours * 10) / 10}
+                  </td>
+                  <td className="num">{Math.round(e.balance * 10) / 10}</td>
+                  <td className="num">
+                    {!e.generated && (
+                      <span className="row" style={{ gap: 2, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
+                        <button
+                          className="action danger-text"
+                          onClick={() => startEdit(e)}
+                          aria-label={`Edit ${TYPE_LABEL[e.type]} on ${prettyDate(e.date)}`}
+                          title="Edit"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          className="action danger-text"
+                          onClick={() => confirmRemove(e)}
+                          aria-label={`Delete ${TYPE_LABEL[e.type]} on ${prettyDate(e.date)}`}
+                          title="Delete"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </>
   )

@@ -14,9 +14,9 @@
  * planning model. Everything that *does* step is stepped correctly.
  */
 
-import { PERIODS_PER_YEAR, computePaycheck, type CompProfile } from './tax'
+import { computePaycheck, type CompProfile } from './tax'
 import { getTaxYear, type TaxYear } from './taxData'
-import { toISO } from './pto'
+import { payDates } from './payDates'
 
 export interface PayPeriod {
   /** 1-based paycheck number within the year. */
@@ -43,42 +43,7 @@ export interface PayPeriod {
   event?: 'ss-cap' | 'deferral-cap'
 }
 
-/** Pay dates for a year. Weekly/biweekly step from `anchor`; the rest are calendar-driven. */
-export function payDates(profile: CompProfile, anchorISO?: string): string[] {
-  const { year, payFrequency } = profile
-  const out: string[] = []
-
-  if (payFrequency === 'monthly') {
-    for (let m = 0; m < 12; m++) out.push(toISO(new Date(Date.UTC(year, m + 1, 0))))
-    return out
-  }
-
-  if (payFrequency === 'semimonthly') {
-    for (let m = 0; m < 12; m++) {
-      out.push(toISO(new Date(Date.UTC(year, m, 15))))
-      out.push(toISO(new Date(Date.UTC(year, m + 1, 0))))
-    }
-    return out
-  }
-
-  const step = payFrequency === 'weekly' ? 7 : 14
-  const cursor = anchorISO ? new Date(`${anchorISO}T00:00:00Z`) : firstFriday(year)
-  // An anchor from another year is walked into this one rather than rejected,
-  // so a saved hire-date anchor keeps working as the years roll over.
-  while (cursor.getUTCFullYear() < year) cursor.setUTCDate(cursor.getUTCDate() + step)
-  const periods = PERIODS_PER_YEAR[payFrequency]
-  for (let i = 0; i < periods; i++) {
-    out.push(toISO(cursor))
-    cursor.setUTCDate(cursor.getUTCDate() + step)
-  }
-  return out
-}
-
-function firstFriday(year: number): Date {
-  const d = new Date(Date.UTC(year, 0, 1))
-  d.setUTCDate(1 + ((5 - d.getUTCDay() + 7) % 7))
-  return d
-}
+export { payDates }
 
 export function payTimeline(
   profile: CompProfile,
