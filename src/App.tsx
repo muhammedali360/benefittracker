@@ -1,12 +1,14 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useStore } from './store'
 import { Paycheck } from './views/Paycheck'
 import { TimeOff } from './views/TimeOff'
 import { Plan } from './views/Plan'
 import { Settings } from './views/Settings'
+import { QuickStart } from './views/QuickStart'
+import { getTaxYear } from './engine/taxData'
 import './theme.css'
 
-type Tab = 'paycheck' | 'plan' | 'timeoff' | 'settings'
+export type Tab = 'paycheck' | 'plan' | 'timeoff' | 'settings'
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'paycheck', label: 'Paycheck' },
@@ -15,10 +17,36 @@ const TABS: { id: Tab; label: string }[] = [
   { id: 'settings', label: 'Settings' },
 ]
 
+const isTab = (s: string): s is Tab => TABS.some((t) => t.id === s)
+
+/**
+ * The tab (and the Plan sub-section) live in the URL hash, so a reload lands
+ * where you were and a link to "#plan/bonus" means something.
+ */
+function readRoute(): { tab: Tab; section?: string } {
+  const [tab, section] = window.location.hash.replace(/^#\/?/, '').split('/')
+  return { tab: isTab(tab) ? tab : 'paycheck', section: section || undefined }
+}
+
+function useRoute() {
+  const [route, setRoute] = useState(readRoute)
+  useEffect(() => {
+    const onChange = () => setRoute(readRoute())
+    window.addEventListener('hashchange', onChange)
+    return () => window.removeEventListener('hashchange', onChange)
+  }, [])
+  const go = (tab: Tab, section?: string) => {
+    window.location.hash = section ? `${tab}/${section}` : tab
+  }
+  return { ...route, go }
+}
+
 export default function App() {
   const store = useStore()
-  const [tab, setTab] = useState<Tab>('paycheck')
-  const needsSalary = store.state.profile.annualSalary <= 0
+  const { tab, section, go } = useRoute()
+  const { profile } = store.state
+  const needsSalary = profile.annualSalary <= 0
+  const taxYear = getTaxYear(profile.year)
 
   return (
     <div className="app">
@@ -26,19 +54,16 @@ export default function App() {
         <div>
           <h1>Benefit Tracker</h1>
           <div className="sub">
-            {store.state.profile.year} · {store.state.profile.state} · local to this machine
+            {profile.year}
+            {taxYear.carriedFrom ? ` (using ${taxYear.carriedFrom} figures)` : ''} · {profile.state}{' '}
+            · local to this machine
           </div>
         </div>
       </header>
 
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            aria-selected={tab === t.id}
-            onClick={() => setTab(t.id)}
-          >
+          <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => go(t.id)}>
             {t.label}
           </button>
         ))}
@@ -47,22 +72,13 @@ export default function App() {
       {/* Both money tabs are gated on a salary — an invented one would look
           just like a real one. Time Off stands on its own without it. */}
       {(tab === 'paycheck' || tab === 'plan') && needsSalary && (
-        <div className="card empty-state">
-          <div className="value">
-            Add your salary to see {tab === 'plan' ? 'what a raise or a bonus is worth' : 'your paycheck broken down'}.
-          </div>
-          <p className="muted-note" style={{ marginBottom: 16 }}>
-            Nothing is shown until then — an invented number would look just like a real one.
-            Time Off works without it.
-          </p>
-          <button className="action primary" onClick={() => setTab('settings')}>
-            Go to Settings
-          </button>
-        </div>
+        <QuickStart store={store} tab={tab} onSettings={() => go('settings')} />
       )}
 
-      {tab === 'paycheck' && !needsSalary && <Paycheck profile={store.state.profile} />}
-      {tab === 'plan' && !needsSalary && <Plan store={store} />}
+      {tab === 'paycheck' && !needsSalary && <Paycheck profile={profile} />}
+      {tab === 'plan' && !needsSalary && (
+        <Plan store={store} section={section} onSection={(s) => go('plan', s)} />
+      )}
 
       {tab === 'timeoff' && <TimeOff store={store} />}
       {tab === 'settings' && <Settings store={store} />}

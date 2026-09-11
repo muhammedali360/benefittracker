@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { useStore } from '../store'
 import {
   compareProfiles,
@@ -42,9 +42,18 @@ function Delta({
   return <span className={`delta ${tone}`}>{signed(value, cents)}</span>
 }
 
-export function Plan({ store }: { store: Store }) {
-  const [section, setSection] = useState<Section>('raise')
-  const { profile } = store.state
+const isSection = (s: string | undefined): s is Section => SECTIONS.some((x) => x.id === s)
+
+export function Plan({
+  store,
+  section: requested,
+  onSection,
+}: {
+  store: Store
+  section?: string
+  onSection: (s: Section) => void
+}) {
+  const section: Section = isSection(requested) ? requested : 'raise'
 
   return (
     <>
@@ -53,15 +62,15 @@ export function Plan({ store }: { store: Store }) {
           <button
             key={s.id}
             className={`action${section === s.id ? ' primary' : ''}`}
-            onClick={() => setSection(s.id)}
+            onClick={() => onSection(s.id)}
             aria-pressed={section === s.id}
           >
             {s.label}
           </button>
         ))}
       </div>
-      {section === 'raise' && <RaiseSection profile={profile} />}
-      {section === 'bonus' && <BonusSection profile={profile} />}
+      {section === 'raise' && <RaiseSection store={store} />}
+      {section === 'bonus' && <BonusSection store={store} />}
       {section === 'contributions' && <ContributionsSection store={store} />}
     </>
   )
@@ -69,14 +78,26 @@ export function Plan({ store }: { store: Store }) {
 
 // --- raise / relocation ----------------------------------------------------
 
-function RaiseSection({ profile }: { profile: CompProfile }) {
+function RaiseSection({ store }: { store: Store }) {
+  const { profile, scenarios } = store.state
   const taxYear = getTaxYear(profile.year)
   // Seeded with a 10% bump — a starting point that's obviously an example,
-  // rather than a zero-delta screen that shows nothing until you type.
-  const [variant, setVariant] = useState<CompProfile>({
-    ...profile,
+  // rather than a zero-delta screen that shows nothing until you type. Once
+  // edited, the scenario is persisted so it survives a tab switch or reload.
+  const seed = {
     annualSalary: Math.round((profile.annualSalary * 1.1) / 500) * 500,
-  })
+    state: profile.state,
+    retirement401kPercent: profile.retirement401kPercent,
+  }
+  const variant: CompProfile = { ...profile, ...(scenarios.raise ?? seed) }
+  const setVariant = (next: CompProfile) =>
+    store.setScenarios({
+      raise: {
+        annualSalary: next.annualSalary,
+        state: next.state,
+        retirement401kPercent: next.retirement401kPercent,
+      },
+    })
 
   const d = useMemo(() => compareProfiles(profile, variant), [profile, variant])
   const periods = PERIODS_PER_YEAR[profile.payFrequency]
@@ -89,6 +110,18 @@ function RaiseSection({ profile }: { profile: CompProfile }) {
         <p className="caption">
           A raise, a move, a different 401(k) rate — all the same question. Edit the right-hand
           column; nothing here touches your saved profile.
+          {scenarios.raise && (
+            <>
+              {' '}
+              <button
+                type="button"
+                className="action link"
+                onClick={() => store.setScenarios({ raise: null })}
+              >
+                Reset to a 10% raise
+              </button>
+            </>
+          )}
         </p>
 
         <div className="compare-grid">
@@ -192,54 +225,56 @@ function RaiseSection({ profile }: { profile: CompProfile }) {
 
       <div className="card">
         <h2>Side by side</h2>
-        <table className="data">
-          <thead>
-            <tr>
-              <th>Item</th>
-              <th className="num">Today</th>
-              <th className="num">Scenario</th>
-              <th className="num">Change</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(
-              [
-                ['Gross salary', d.base.gross, d.variant.gross, 1],
-                ['Federal income tax', d.base.federalIncomeTax, d.variant.federalIncomeTax, -1],
-                ['State income tax', d.base.stateIncomeTax, d.variant.stateIncomeTax, -1],
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Item</th>
+                <th className="num">Today</th>
+                <th className="num">Scenario</th>
+                <th className="num">Change</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(
                 [
-                  'FICA & disability',
-                  d.base.socialSecurity + d.base.medicare + d.base.additionalMedicare + d.base.disabilityInsurance,
-                  d.variant.socialSecurity + d.variant.medicare + d.variant.additionalMedicare + d.variant.disabilityInsurance,
-                  -1,
-                ],
-                // Deferring more cuts take-home but isn't a loss — it's yours.
-                ['Pre-tax deductions', d.base.ficaExemptPretax + d.base.retirement, d.variant.ficaExemptPretax + d.variant.retirement, 0],
-                ['Effective tax rate', d.base.effectiveRate, d.variant.effectiveRate, -1],
-                ['Employer match', d.base.employerMatch, d.variant.employerMatch, 1],
-                ['Take-home', d.base.net, d.variant.net, 1],
-              ] as [string, number, number, 1 | -1 | 0][]
-            ).map(([label, a, b, polarity]) => {
-              const isRate = label.includes('rate')
-              return (
-                <tr key={label} className={label === 'Take-home' ? 'total' : undefined}>
-                  <td className="name">{label}</td>
-                  <td className="num">{isRate ? percent(a) : money(a)}</td>
-                  <td className="num">{isRate ? percent(b) : money(b)}</td>
-                  <td className="num">
-                    {isRate ? (
-                      <span className={`delta ${b > a ? 'down' : b < a ? 'up' : ''}`}>
-                        {b === a ? '—' : `${b > a ? '+' : '−'}${percent(Math.abs(b - a))}`}
-                      </span>
-                    ) : (
-                      <Delta value={b - a} polarity={polarity} />
-                    )}
-                  </td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+                  ['Gross salary', d.base.gross, d.variant.gross, 1],
+                  ['Federal income tax', d.base.federalIncomeTax, d.variant.federalIncomeTax, -1],
+                  ['State income tax', d.base.stateIncomeTax, d.variant.stateIncomeTax, -1],
+                  [
+                    'FICA & disability',
+                    d.base.socialSecurity + d.base.medicare + d.base.additionalMedicare + d.base.disabilityInsurance,
+                    d.variant.socialSecurity + d.variant.medicare + d.variant.additionalMedicare + d.variant.disabilityInsurance,
+                    -1,
+                  ],
+                  // Deferring more cuts take-home but isn't a loss — it's yours.
+                  ['Pre-tax deductions', d.base.ficaExemptPretax + d.base.retirement, d.variant.ficaExemptPretax + d.variant.retirement, 0],
+                  ['Effective tax rate', d.base.effectiveRate, d.variant.effectiveRate, -1],
+                  ['Employer match', d.base.employerMatch, d.variant.employerMatch, 1],
+                  ['Take-home', d.base.net, d.variant.net, 1],
+                ] as [string, number, number, 1 | -1 | 0][]
+              ).map(([label, a, b, polarity]) => {
+                const isRate = label.includes('rate')
+                return (
+                  <tr key={label} className={label === 'Take-home' ? 'total' : undefined}>
+                    <td className="name">{label}</td>
+                    <td className="num">{isRate ? percent(a) : money(a)}</td>
+                    <td className="num">{isRate ? percent(b) : money(b)}</td>
+                    <td className="num">
+                      {isRate ? (
+                        <span className={`delta ${b > a ? 'down' : b < a ? 'up' : ''}`}>
+                          {b === a ? '—' : `${b > a ? '+' : '−'}${percent(Math.abs(b - a))}`}
+                        </span>
+                      ) : (
+                        <Delta value={b - a} polarity={polarity} />
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
         <p className="muted-note" style={{ marginTop: 12 }}>
           {movedState
             ? 'A state move changes withholding only. Cost of living, and any city tax, are not modelled.'
@@ -252,10 +287,12 @@ function RaiseSection({ profile }: { profile: CompProfile }) {
 
 // --- bonus -----------------------------------------------------------------
 
-function BonusSection({ profile }: { profile: CompProfile }) {
+function BonusSection({ store }: { store: Store }) {
+  const { profile, scenarios } = store.state
   const taxYear = getTaxYear(profile.year)
-  const [gross, setGross] = useState(10_000)
-  const [deferPct, setDeferPct] = useState(0)
+  const { gross, deferPct } = scenarios.bonus
+  const setGross = (v: number) => store.setScenarios({ bonus: { gross: v, deferPct } })
+  const setDeferPct = (v: number) => store.setScenarios({ bonus: { gross, deferPct: v } })
 
   const b = useMemo(
     () => computeBonus(profile, gross, taxYear, deferPct / 100),
@@ -358,36 +395,38 @@ function BonusSection({ profile }: { profile: CompProfile }) {
 
           <div className="card">
             <h2>Line by line</h2>
-            <table className="data">
-              <thead>
-                <tr>
-                  <th>Item</th>
-                  <th className="num">Amount</th>
-                  <th className="num">Share</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(
-                  [
-                    ['Bonus', b.gross],
-                    ...(b.retirement ? ([['401(k) deferral', -b.retirement]] as [string, number][]) : []),
-                    ['Federal withholding (flat)', -b.federalWithheld],
-                    ...(b.stateWithheld ? ([['State withholding (flat)', -b.stateWithheld]] as [string, number][]) : []),
-                    ...(b.socialSecurity ? ([['Social Security', -b.socialSecurity]] as [string, number][]) : []),
-                    ['Medicare', -b.medicare],
-                    ...(b.additionalMedicare ? ([['Additional Medicare', -b.additionalMedicare]] as [string, number][]) : []),
-                    ...(b.disability ? ([[taxYear.states[profile.state]?.disabilityInsurance?.label ?? 'Disability', -b.disability]] as [string, number][]) : []),
-                    ['Net', b.net],
-                  ] as [string, number][]
-                ).map(([label, v]) => (
-                  <tr key={label} className={label === 'Net' ? 'total' : undefined}>
-                    <td className="name">{label}</td>
-                    <td className="num">{money(v, true)}</td>
-                    <td className="num">{percent(Math.abs(v) / b.gross)}</td>
+            <div className="table-scroll">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th>Item</th>
+                    <th className="num">Amount</th>
+                    <th className="num">Share</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {(
+                    [
+                      ['Bonus', b.gross],
+                      ...(b.retirement ? ([['401(k) deferral', -b.retirement]] as [string, number][]) : []),
+                      ['Federal withholding (flat)', -b.federalWithheld],
+                      ...(b.stateWithheld ? ([['State withholding (flat)', -b.stateWithheld]] as [string, number][]) : []),
+                      ...(b.socialSecurity ? ([['Social Security', -b.socialSecurity]] as [string, number][]) : []),
+                      ['Medicare', -b.medicare],
+                      ...(b.additionalMedicare ? ([['Additional Medicare', -b.additionalMedicare]] as [string, number][]) : []),
+                      ...(b.disability ? ([[taxYear.states[profile.state]?.disabilityInsurance?.label ?? 'Disability', -b.disability]] as [string, number][]) : []),
+                      ['Net', b.net],
+                    ] as [string, number][]
+                  ).map(([label, v]) => (
+                    <tr key={label} className={label === 'Net' ? 'total' : undefined}>
+                      <td className="name">{label}</td>
+                      <td className="num">{money(v, true)}</td>
+                      <td className="num">{percent(Math.abs(v) / b.gross)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
             <p className="muted-note" style={{ marginTop: 12 }}>
               Withholding is what your employer takes out. What the bonus finally costs is{' '}
               {money(b.trueIncomeTax)} of income tax plus{' '}
@@ -406,7 +445,8 @@ function BonusSection({ profile }: { profile: CompProfile }) {
 function ContributionsSection({ store }: { store: Store }) {
   const { profile } = store.state
   const taxYear = getTaxYear(profile.year)
-  const [family, setFamily] = useState(false)
+  const family = store.state.scenarios.familyHsa
+  const setFamily = (v: boolean) => store.setScenarios({ familyHsa: v })
 
   const pacing = useMemo(() => deferralPacing(profile, taxYear), [profile, taxYear])
   const rooms = useMemo(
@@ -507,54 +547,56 @@ function ContributionsSection({ store }: { store: Store }) {
         <div className="row" style={{ marginBottom: 14 }}>
           <button
             className={`action${family ? ' primary' : ''}`}
-            onClick={() => setFamily((f) => !f)}
+            onClick={() => setFamily(!family)}
             aria-pressed={family}
           >
             Family HSA coverage
           </button>
         </div>
-        <table className="data">
-          <thead>
-            <tr>
-              <th>Account</th>
-              <th className="num">Elected</th>
-              <th className="num">{profile.year} limit</th>
-              <th className="num">Room left</th>
-              <th className="num">Per paycheck</th>
-              <th className="num">Real cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rooms.map((r) => (
-              <tr key={r.key}>
-                <td className="name">
-                  {r.label}
-                  {r.ficaExempt && (
-                    <span className="pill" style={{ marginLeft: 8 }}>
-                      dodges FICA too
-                    </span>
-                  )}
-                </td>
-                <td className="num">{money(r.elected)}</td>
-                <td className="num">{money(r.limit)}</td>
-                <td className="num">{r.headroom > 0 ? money(r.headroom) : '—'}</td>
-                <td className="num">{r.headroom > 0 ? money(r.perPeriodToMax, true) : '—'}</td>
-                <td className="num">
-                  {r.headroom > 0 ? (
-                    <>
-                      {money(r.netCost)}{' '}
-                      <span className="delta up" style={{ fontWeight: 400 }}>
-                        (saves {money(r.taxSaved)})
-                      </span>
-                    </>
-                  ) : (
-                    <span className="delta up">maxed</span>
-                  )}
-                </td>
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th className="num">Elected</th>
+                <th className="num">{profile.year} limit</th>
+                <th className="num">Room left</th>
+                <th className="num">Per paycheck</th>
+                <th className="num">Real cost</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rooms.map((r) => (
+                <tr key={r.key}>
+                  <td className="name">
+                    {r.label}
+                    {r.ficaExempt && (
+                      <span className="pill" style={{ marginLeft: 8 }}>
+                        dodges FICA too
+                      </span>
+                    )}
+                  </td>
+                  <td className="num">{money(r.elected)}</td>
+                  <td className="num">{money(r.limit)}</td>
+                  <td className="num">{r.headroom > 0 ? money(r.headroom) : '—'}</td>
+                  <td className="num">{r.headroom > 0 ? money(r.perPeriodToMax, true) : '—'}</td>
+                  <td className="num">
+                    {r.headroom > 0 ? (
+                      <>
+                        {money(r.netCost)}{' '}
+                        <span className="delta up" style={{ fontWeight: 400 }}>
+                          (saves {money(r.taxSaved)})
+                        </span>
+                      </>
+                    ) : (
+                      <span className="delta up">maxed</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         <p className="muted-note" style={{ marginTop: 12 }}>
           "Real cost" is the headroom minus the tax it avoids at your marginal rate. HSA and FSA
           dollars escape FICA as well as income tax, so they're the cheapest of the three — but FSA

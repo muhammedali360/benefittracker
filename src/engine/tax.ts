@@ -10,14 +10,10 @@ import {
   getTaxYear,
 } from './taxData'
 
-export type PayFrequency = 'weekly' | 'biweekly' | 'semimonthly' | 'monthly'
+import { PERIODS_PER_YEAR, type PayFrequency } from './payFrequency'
+import { payDates } from './payDates'
 
-export const PERIODS_PER_YEAR: Record<PayFrequency, number> = {
-  weekly: 52,
-  biweekly: 26,
-  semimonthly: 24,
-  monthly: 12,
-}
+export { PERIODS_PER_YEAR, type PayFrequency }
 
 export interface CompProfile {
   annualSalary: number
@@ -220,10 +216,10 @@ export function socialSecurityCutoff(
 
   const perPeriod = ficaWages / periods
   const periodIndex = Math.ceil(wageBase / perPeriod)
-  // Approximate the calendar date of that period's end.
-  const dayOfYear = Math.round((periodIndex / periods) * 365)
-  const date = new Date(Date.UTC(profile.year, 0, dayOfYear))
-  return { periodIndex, date: date.toISOString().slice(0, 10) }
+  // The real pay date, so the callout lands on the same day the timeline chart
+  // draws the step.
+  const date = payDates(profile)[periodIndex - 1]
+  return { periodIndex, date }
 }
 
 /**

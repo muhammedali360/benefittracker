@@ -30,6 +30,61 @@ function Tooltip({ tip }: { tip: TipState | null }) {
   )
 }
 
+export interface TableSpec {
+  head: string[]
+  rows: (string | number)[][]
+  /** Per column; numeric columns right-align with tabular figures. */
+  numeric?: boolean[]
+}
+
+/**
+ * Every chart can be flipped to a table. Hover tooltips are otherwise the only
+ * route to the exact figures, and hover doesn't exist on a phone or a keyboard.
+ */
+function ChartOrTable({ table, children }: { table: TableSpec; children: React.ReactNode }) {
+  const [asTable, setAsTable] = useState(false)
+  return (
+    <div>
+      {asTable ? (
+        <div className="table-scroll">
+          <table className="data">
+            <thead>
+              <tr>
+                {table.head.map((h, i) => (
+                  <th key={i} className={table.numeric?.[i] ? 'num' : undefined}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {table.rows.map((r, ri) => (
+                <tr key={ri}>
+                  {r.map((c, ci) => (
+                    <td key={ci} className={table.numeric?.[ci] ? 'num' : undefined}>
+                      {c}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        children
+      )}
+      <button
+        type="button"
+        className="chart-toggle"
+        aria-pressed={asTable}
+        onClick={() => setAsTable((v) => !v)}
+      >
+        {asTable ? 'Show as chart' : 'Show as table'}
+      </button>
+    </div>
+  )
+}
+
 export interface Segment {
   label: string
   value: number
@@ -58,8 +113,14 @@ export function AllocationBar({ segments, total }: { segments: Segment[]; total:
     return seg
   })
 
+  const table: TableSpec = {
+    head: ['Segment', 'Amount', 'Share of gross'],
+    numeric: [false, true, true],
+    rows: placed.map((s) => [s.label, money(s.value), `${((s.value / sum) * 100).toFixed(1)}%`]),
+  }
+
   return (
-    <div>
+    <ChartOrTable table={table}>
       <svg
         width="100%"
         height={height}
@@ -107,7 +168,7 @@ export function AllocationBar({ segments, total }: { segments: Segment[]; total:
         ))}
       </div>
       <Tooltip tip={tip} />
-    </div>
+    </ChartOrTable>
   )
 }
 
@@ -199,8 +260,22 @@ export function BalanceLines({
     })
   }
 
+  const daysAt = (s: BalanceSeries, i: number) =>
+    Math.round(((s.points[i]?.balance ?? 0) / s.hoursPerDay) * 100) / 100
+  const table: TableSpec = {
+    head: ['Month end', ...live.map((s) => s.label), ...(live.length > 1 ? ['Total'] : [])],
+    numeric: [false, ...live.map(() => true), true],
+    rows: dates.map((d, i) => [
+      prettyDate(d),
+      ...live.map((s) => `${hoursLabel(s.points[i]?.balance ?? 0)} · ${daysAt(s, i)}d`),
+      ...(live.length > 1
+        ? [`${Math.round(live.reduce((a, s) => a + daysAt(s, i), 0) * 100) / 100} days`]
+        : []),
+    ]),
+  }
+
   return (
-    <div>
+    <ChartOrTable table={table}>
       <svg
         ref={ref}
         viewBox={`0 0 ${w} ${h}`}
@@ -347,7 +422,7 @@ export function BalanceLines({
         ))}
       </div>
       <Tooltip tip={tip} />
-    </div>
+    </ChartOrTable>
   )
 }
 
@@ -436,8 +511,23 @@ export function PaycheckTimeline({ points }: { points: TimelinePoint[] }) {
     })
   }
 
+  const table: TableSpec = {
+    head: ['#', 'Pay date', 'Gross', '401(k)', 'Match', 'Tax withheld', 'Take-home', ''],
+    numeric: [true, false, true, true, true, true, true, false],
+    rows: points.map((p) => [
+      p.index,
+      prettyDate(p.date),
+      money(p.gross, true),
+      money(p.retirement, true),
+      money(p.employerMatch, true),
+      money(p.tax, true),
+      money(p.net, true),
+      p.event ? EVENT_COPY[p.event].label : '',
+    ]),
+  }
+
   return (
-    <div>
+    <ChartOrTable table={table}>
       <svg
         ref={ref}
         viewBox={`0 0 ${w} ${h}`}
@@ -508,7 +598,7 @@ export function PaycheckTimeline({ points }: { points: TimelinePoint[] }) {
         small next to the checks themselves.
       </p>
       <Tooltip tip={tip} />
-    </div>
+    </ChartOrTable>
   )
 }
 

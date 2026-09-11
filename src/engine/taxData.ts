@@ -73,6 +73,12 @@ export interface TaxYear {
   federal: FederalParams
   states: Record<string, StateParams>
   limits: ContributionLimits
+  /**
+   * Set when nothing has been published for `year` and the figures are the
+   * latest published block carried forward. Surfaced in the UI so a January
+   * reader knows the numbers are last year's until the block is refreshed.
+   */
+  carriedFrom?: number
 }
 
 const FEDERAL_2026: FederalParams = {
@@ -201,10 +207,33 @@ export const TAX_YEARS: Record<number, TaxYear> = {
   },
 }
 
-export const DEFAULT_YEAR = 2026
+/** Years with a published block, oldest first. */
+export const PUBLISHED_YEARS = Object.keys(TAX_YEARS)
+  .map(Number)
+  .sort((a, b) => a - b)
 
+/**
+ * The calendar year, so the app rolls over in January instead of freezing on
+ * the last year someone typed in. Never earlier than the first published block.
+ */
+export const DEFAULT_YEAR = Math.max(new Date().getFullYear(), PUBLISHED_YEARS[0])
+
+/**
+ * Tax data for a year. Unpublished years borrow the most recent published
+ * block rather than throwing — the app has to keep working in January, and
+ * last year's brackets are the right planning numbers until the new ones land.
+ * The result is tagged with `carriedFrom` so the UI can say so.
+ */
 export function getTaxYear(year: number): TaxYear {
-  const ty = TAX_YEARS[year]
-  if (!ty) throw new Error(`No tax data for year ${year}`)
-  return ty
+  const exact = TAX_YEARS[year]
+  if (exact) return exact
+  const source = [...PUBLISHED_YEARS].reverse().find((y) => y <= year) ?? PUBLISHED_YEARS[0]
+  const cached = CARRIED[year]
+  if (cached) return cached
+  const carried: TaxYear = { ...TAX_YEARS[source], year, carriedFrom: source }
+  CARRIED[year] = carried
+  return carried
 }
+
+// Memoised so a carried-forward year is referentially stable across renders.
+const CARRIED: Record<number, TaxYear> = {}

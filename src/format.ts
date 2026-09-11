@@ -8,12 +8,13 @@ export const money = (n: number, cents = false) =>
 
 export const percent = (n: number, digits = 1) => `${(n * 100).toFixed(digits)}%`
 
-/** Hours read more naturally as "3.5 days (28h)" for time-off balances. */
-export const hoursAsDays = (hours: number, hoursPerDay: number) => {
-  const days = hours / hoursPerDay
+/** "3.5 days", "1 day" — the unit people actually think in for time off. */
+export const daysLabel = (days: number) => {
   const rounded = Math.round(days * 100) / 100
   return `${rounded} ${Math.abs(rounded) === 1 ? 'day' : 'days'}`
 }
+
+export const hoursAsDays = (hours: number, hoursPerDay: number) => daysLabel(hours / hoursPerDay)
 
 export const hoursLabel = (hours: number) => `${Math.round(hours * 10) / 10}h`
 

@@ -7,6 +7,7 @@ import {
   type CompProfile,
 } from './tax'
 import { getTaxYear } from './taxData'
+import { payDates } from './payDates'
 
 const base: CompProfile = {
   annualSalary: 100_000,
@@ -116,6 +117,12 @@ describe('Social Security wage base', () => {
     const cutoff = socialSecurityCutoff({ ...base, annualSalary: 250_000 })
     expect(cutoff).not.toBeNull()
     expect(cutoff!.periodIndex).toBeLessThan(26)
+  })
+
+  it('dates the cutoff on a real pay date, not a day-of-year estimate', () => {
+    const profile = { ...base, annualSalary: 250_000 }
+    const cutoff = socialSecurityCutoff(profile)!
+    expect(cutoff.date).toBe(payDates(profile)[cutoff.periodIndex - 1])
   })
 })
 

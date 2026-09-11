@@ -575,3 +575,93 @@ button.action.danger-text:hover {
   margin-bottom: 16px;
   flex-wrap: wrap;
 }
+
+/* --- tables & chart tables ---------------------------------------------- */
+
+/* Wide tables scroll sideways inside their card instead of wrapping every cell. */
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.table-scroll table.data th,
+.table-scroll table.data td {
+  white-space: nowrap;
+}
+
+.table-scroll table.data td.wrap {
+  white-space: normal;
+  min-width: 180px;
+}
+
+.chart-toggle {
+  margin-top: 10px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chart-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* --- first run ------------------------------------------------------------ */
+
+.quickstart form {
+  max-width: 680px;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.quickstart .row {
+  justify-content: center;
+  margin-top: 18px;
+}
+
+/* --- ledger --------------------------------------------------------------- */
+
+.ledger-tools {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+button.action.small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+button.action.link {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--series-net);
+}
+
+table.data tr.editing td {
+  background: color-mix(in srgb, var(--series-net) 10%, transparent);
+}
+
+.card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.card-head h2 {
+  margin-bottom: 4px;
+}

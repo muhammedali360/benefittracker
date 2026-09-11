@@ -10,14 +10,35 @@ import { DEFAULT_YEAR } from './engine/taxData'
 
 const KEY = 'benefittracker.v1'
 
+/**
+ * What-if inputs from the Plan tab. They're persisted so switching tabs (or
+ * reloading) doesn't throw away a scenario someone was halfway through.
+ */
+export interface Scenarios {
+  /** null = not yet touched; the view seeds a 10% raise from the profile. */
+  raise: { annualSalary: number; state: string; retirement401kPercent: number } | null
+  bonus: { gross: number; deferPct: number }
+  familyHsa: boolean
+}
+
 export interface AppState {
   profile: CompProfile
   buckets: BucketConfig[]
   events: PtoEvent[]
+  scenarios: Scenarios
 }
 
 export const PTO_BUCKET = 'pto'
 export const FLOATING_BUCKET = 'floating'
+
+/** Colours handed out to new buckets, in order, after the two defaults. */
+export const BUCKET_COLORS = ['#2a78d6', '#1baf7a', '#eb6834', '#4a3aa7', '#eda100', '#d03b3b']
+
+export const initialScenarios: Scenarios = {
+  raise: null,
+  bonus: { gross: 10_000, deferPct: 0 },
+  familyHsa: false,
+}
 
 export const initialState: AppState = {
   profile: {
@@ -45,7 +66,7 @@ export const initialState: AppState = {
       accrualStart: `${DEFAULT_YEAR}-01-01`,
       maxBalanceHours: null,
       carryoverCapHours: null,
-      color: '#2a78d6',
+      color: BUCKET_COLORS[0],
     },
     {
       // Floaters aren't earned on a schedule — they show up as one-off grants.
@@ -57,31 +78,33 @@ export const initialState: AppState = {
       accrualStart: `${DEFAULT_YEAR}-01-01`,
       maxBalanceHours: null,
       carryoverCapHours: null,
-      color: '#1baf7a',
+      color: BUCKET_COLORS[1],
     },
   ],
-  events: [
-    {
-      id: 'seed-floater',
-      bucketId: FLOATING_BUCKET,
-      type: 'grant',
-      date: `${DEFAULT_YEAR}-07-15`,
-      hours: 8,
-      note: 'Floating holiday awarded',
+  // Empty on purpose. A fabricated grant would sit in the ledger looking
+  // exactly like a real one.
+  events: [],
+  scenarios: initialScenarios,
+}
+
+function merge(parsed: Partial<AppState>): AppState {
+  return {
+    profile: { ...initialState.profile, ...parsed.profile },
+    buckets: parsed.buckets?.length ? parsed.buckets : initialState.buckets,
+    events: parsed.events ?? [],
+    scenarios: {
+      ...initialScenarios,
+      ...parsed.scenarios,
+      bonus: { ...initialScenarios.bonus, ...parsed.scenarios?.bonus },
     },
-  ],
+  }
 }
 
 function load(): AppState {
   try {
     const raw = localStorage.getItem(KEY)
     if (!raw) return initialState
-    const parsed = JSON.parse(raw) as Partial<AppState>
-    return {
-      profile: { ...initialState.profile, ...parsed.profile },
-      buckets: parsed.buckets?.length ? parsed.buckets : initialState.buckets,
-      events: parsed.events ?? initialState.events,
-    }
+    return merge(JSON.parse(raw) as Partial<AppState>)
   } catch {
     return initialState
   }
@@ -98,6 +121,10 @@ export function useStore() {
     setState((s) => ({ ...s, profile: { ...s.profile, ...patch } }))
   }, [])
 
+  const setScenarios = useCallback((patch: Partial<Scenarios>) => {
+    setState((s) => ({ ...s, scenarios: { ...s.scenarios, ...patch } }))
+  }, [])
+
   const setBucket = useCallback((id: string, patch: Partial<BucketConfig>) => {
     setState((s) => ({
       ...s,
@@ -105,10 +132,47 @@ export function useStore() {
     }))
   }, [])
 
+  const addBucket = useCallback(() => {
+    setState((s) => {
+      const template = s.buckets[0] ?? initialState.buckets[0]
+      const color = BUCKET_COLORS[s.buckets.length % BUCKET_COLORS.length]
+      const bucket: BucketConfig = {
+        id: `b-${crypto.randomUUID()}`,
+        label: 'New bucket',
+        hoursPerDay: template.hoursPerDay,
+        accrualKind: 'none',
+        annualDays: 0,
+        accrualStart: `${s.profile.year}-01-01`,
+        maxBalanceHours: null,
+        carryoverCapHours: null,
+        color,
+      }
+      return { ...s, buckets: [...s.buckets, bucket] }
+    })
+  }, [])
+
+  /** Removes the bucket and every event booked against it. */
+  const removeBucket = useCallback((id: string) => {
+    setState((s) => ({
+      ...s,
+      buckets: s.buckets.filter((b) => b.id !== id),
+      events: s.events.filter((e) => e.bucketId !== id),
+    }))
+  }, [])
+
   const addEvent = useCallback((event: Omit<PtoEvent, 'id'>) => {
     setState((s) => ({
       ...s,
       events: [...s.events, { ...event, id: `e-${crypto.randomUUID()}` }],
+    }))
+  }, [])
+
+  const updateEvent = useCallback((id: string, patch: Omit<PtoEvent, 'id'>) => {
+    setState((s) => ({
+      ...s,
+      // Replace rather than merge: a booking edited from a span to a single
+      // day must lose its endDate, not keep a stale one.
+      events: s.events.map((e) => (e.id === id ? { ...patch, id } : e)),
     }))
   }, [])
 
@@ -127,13 +191,26 @@ export function useStore() {
   }, [state])
 
   const importJSON = useCallback(async (file: File) => {
-    const parsed = JSON.parse(await file.text()) as Partial<AppState>
-    setState({
-      profile: { ...initialState.profile, ...parsed.profile },
-      buckets: parsed.buckets?.length ? parsed.buckets : initialState.buckets,
-      events: parsed.events ?? [],
-    })
+    setState(merge(JSON.parse(await file.text()) as Partial<AppState>))
   }, [])
 
-  return { state, setProfile, setBucket, addEvent, removeEvent, exportJSON, importJSON }
+  const resetAll = useCallback(() => {
+    localStorage.removeItem(KEY)
+    setState(initialState)
+  }, [])
+
+  return {
+    state,
+    setProfile,
+    setScenarios,
+    setBucket,
+    addBucket,
+    removeBucket,
+    addEvent,
+    updateEvent,
+    removeEvent,
+    exportJSON,
+    importJSON,
+    resetAll,
+  }
 }

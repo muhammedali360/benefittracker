@@ -77,6 +77,7 @@ dollars, because that's what it is. On top of that:
 ```
 src/engine/taxData.ts       year-keyed tax parameters (data, with sources)
 src/engine/tax.ts           paycheck, bonus and scenario math — pure functions
+src/engine/payDates.ts      the real pay dates of a year, shared by tax and timeline
 src/engine/timeline.ts      the year replayed paycheck by paycheck
 src/engine/contributions.ts deferral pacing and pre-tax headroom
 src/engine/pto.ts           the PTO ledger — pure functions
@@ -87,7 +88,13 @@ src/views/                  Paycheck, Plan, Time Off, Settings
 ```
 
 Every engine is pure and carries the test suite. Adding a tax year means adding
-a block to `taxData.ts` — never touching engine code.
+a block to `taxData.ts` — never touching engine code. Until that block exists,
+an unpublished year borrows the latest published one and is tagged
+`carriedFrom`, which Settings and the masthead surface; the app rolls into
+January on last year's figures rather than refusing to open.
+
+The active tab lives in the URL hash (`#plan/bonus`), Plan scenarios persist
+with the rest of the state, and every chart has a "show as table" toggle.
 
 ## On the tax numbers
 
