@@ -150,10 +150,17 @@ export function TimeOff({ store }: { store: Store }) {
       ? chargeableDays(form.start, form.end, holidays)
       : null
   const derivedHours = span ? span.workdays * formBucket.hoursPerDay : 0
-
+  /**
+   * A blank Hours field means exactly what its placeholder shows. For grant /
+   * adjustment (and usage spans with no chargeable days) the span math yields
+   * 0, so the placeholder falls back to a full day — the submit path must fall
+   * back to the same value or "blank uses the value above" is a lie and the
+   * Add to ledger button stays dead.
+   */
+  const blankHours = derivedHours || formBucket?.hoursPerDay || 8
   const datesOk =
     isValidISO(form.start) && (form.type !== 'usage' || (isValidISO(form.end) && form.end >= form.start))
-  const effectiveHours = form.hours ?? derivedHours
+  const effectiveHours = form.hours ?? blankHours
   const canSubmit = datesOk && effectiveHours !== 0 && Boolean(form.bucketId)
 
   const submit = (e: React.FormEvent) => {
@@ -429,7 +436,7 @@ export function TimeOff({ store }: { store: Store }) {
                 suffix="h"
                 step="0.5"
                 value={form.hours}
-                placeholder={derivedHours ? String(derivedHours) : String(formBucket?.hoursPerDay ?? 8)}
+                placeholder={String(blankHours)}
                 onChange={(n) => setForm({ ...form, hours: n })}
               />
               <span className="hint">
